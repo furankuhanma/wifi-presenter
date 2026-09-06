@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Presentation Viewer</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div class="control-bar status-bar" id="statusBar">
+  <span><span class="status-dot"></span><span id="slideNumber">Connecting…</span></span>
+  <span>
+    <button id="rotateBtn" title="Switch between landscape and portrait">Rotate</button>
+   
+  </span>
+</div>
+
+<div class="stage-outer" id="stageOuter">
+  <div class="stage" id="stage"></div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/render.js"></script>
+<script src="/viewer.js"></script>
+</body>
+</html>

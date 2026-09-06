@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Presenter Console</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div id="pinScreen">
+  <h2>Enter Presenter PIN</h2>
+  <input id="pinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN" />
+  <button id="pinSubmit">Unlock</button>
+  <div id="pinError"></div>
+</div>
+
+<div id="presenterPage">
+  <div class="presenter-grid">
+    <div class="preview-col">
+      <h3 id="pSlideNumber">Slide 1 of 1</h3>
+      <div class="preview-outer" id="previewOuter">
+        <div class="stage" id="previewStage"></div>
+      </div>
+
+      <div class="button-row">
+        <button id="prevBtn">◀ Prev</button>
+        <button id="nextBtn">Next ▶</button>
+        <button id="resetBtn">Reset</button>
+       
+      </div>
+
+      <h3>Jump to slide</h3>
+      <div id="jumpGrid"></div>
+    </div>
+
+    <div class="controls-panel">
+      <h3>Viewers</h3>
+      <p id="viewerCount">0 viewers connected</p>
+
+      <h3>Student URL</h3>
+      <p id="studentUrl">Loading…</p>
+      <img id="qrcode" alt="QR code to join" />
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/render.js"></script>
+<script src="/presenter.js"></script>
+</body>
+</html>

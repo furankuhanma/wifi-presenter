@@ -1,0 +1,315 @@
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  /* 100% first as a safe fallback for browsers without dvh support,
+     then dvh overrides it. dvh tracks the ACTUAL visible viewport on
+     mobile (shrinks/grows as the address bar hides/shows), whereas
+     100vh on many mobile browsers is fixed to the viewport with the
+     address bar hidden -- causing content to be clipped or to leave
+     a gap depending on scroll state. */
+  height: 100%;
+  height: 100dvh;
+  background: #0b0b0f;
+  font-family: 'Segoe UI', Arial, sans-serif;
+  color: #eee;
+  overflow: hidden;
+  /* Belt-and-suspenders against any child accidentally overflowing
+     horizontally on narrow phones (e.g. a fixed-width element that
+     doesn't shrink) -- without this, overflow:hidden above only
+     clips vertically in some browsers' box models. */
+  max-width: 100vw;
+  overflow-x: hidden;
+  /* Prevents the double-tap-to-zoom / pull-to-refresh gestures from
+     interfering with the presentation on touch devices. */
+  touch-action: manipulation;
+  overscroll-behavior: none;
+}
+
+/* ---------------- Stage (the slide itself) ---------------- */
+
+.stage-outer {
+  position: fixed;
+  inset: 0;
+  /* Respect notches / rounded corners / home indicator on phones. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+
+.stage {
+  position: relative;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: 0 0 30px rgba(0, 0, 0, 0.6);
+  transform-origin: center center;
+}
+
+/* Each slide is now a single pre-rendered image filling the stage. */
+.slide-image-full {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* image/shape elements render as an inline <svg> so non-rectangular
+   picture shapes (icons, badges) and vector glows/dividers can be
+   clipped/drawn accurately instead of showing as a plain box. */
+.slide-element svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ---------------- Control bar (viewer + presenter preview) ---------------- */
+
+.control-bar {
+  position: fixed;
+  top: env(safe-area-inset-top);
+  left: env(safe-area-inset-left);
+  right: env(safe-area-inset-right);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 10;
+  font-size: 14px;
+}
+
+.control-bar button {
+  background: #2a2a35;
+  color: #eee;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 6px 12px;
+  margin-left: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  /* Bigger tap target on touch screens without changing visual size much. */
+  min-height: 32px;
+}
+
+.control-bar button:hover {
+  background: #3a3a48;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #3ecf5e;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.status-bar.reconnecting .status-dot {
+  background: #e0a92d;
+}
+
+/* On very narrow phones, shrink the status bar text/buttons a touch
+   so "Rotate" + "Fullscreen" don't wrap or overflow the screen width. */
+@media (max-width: 380px) {
+  .control-bar {
+    font-size: 12px;
+    padding: 6px 8px;
+  }
+  .control-bar button {
+    padding: 5px 8px;
+    font-size: 12px;
+    margin-left: 4px;
+  }
+}
+
+/* ---------------- Presenter-only chrome ---------------- */
+
+#pinScreen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #14141c;
+  gap: 12px;
+}
+
+#pinScreen input {
+  font-size: 22px;
+  padding: 10px 14px;
+  text-align: center;
+  border-radius: 8px;
+  border: 1px solid #444;
+  background: #1f1f2b;
+  color: #fff;
+  width: 180px;
+}
+
+#pinScreen button {
+  font-size: 16px;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: none;
+  background: #4f81bd;
+  color: #fff;
+  cursor: pointer;
+}
+
+#pinError {
+  color: #e0655f;
+  min-height: 20px;
+}
+
+#presenterPage {
+  display: none;
+  height: 100%;
+  height: 100dvh;
+  width: 100%;
+  max-width: 100vw;
+  padding: 60px 16px 16px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  box-sizing: border-box;
+}
+
+.presenter-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 20px;
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.preview-col,
+.controls-panel {
+  /* Grid items default to a min-width based on their content, which
+     can force the whole grid wider than the viewport if any child
+     (like the QR code or a long URL) doesn't want to shrink. This
+     lets them actually shrink to fit. */
+  min-width: 0;
+  width: 100%;
+}
+
+/* Stack the preview above the controls panel on narrow/phone screens
+   instead of squeezing two columns into a too-small width. This is
+   the PRIMARY fix for phones -- everything below just fine-tunes
+   sizing once stacked. */
+@media (max-width: 700px) {
+  .presenter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #presenterPage {
+    padding: 56px 12px 16px;
+  }
+}
+
+@media (max-width: 420px) {
+  #presenterPage {
+    padding: 52px 8px 12px;
+  }
+}
+
+.preview-outer {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.preview-outer .stage {
+  box-shadow: none;
+}
+
+.controls-panel h3 {
+  margin: 4px 0;
+  font-size: 14px;
+  color: #aaa;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.button-row button {
+  flex: 1 1 auto;
+  min-width: 90px;
+  padding: 12px;
+  font-size: 16px;
+  border-radius: 8px;
+  border: 1px solid #444;
+  background: #2a2a35;
+  color: #fff;
+  cursor: pointer;
+}
+
+.button-row button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+#jumpGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 6px;
+  margin: 10px 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.jump-btn {
+  padding: 8px 0;
+  border-radius: 6px;
+  border: 1px solid #444;
+  background: #1f1f2b;
+  color: #ddd;
+  cursor: pointer;
+}
+
+.jump-btn.active {
+  background: #4f81bd;
+  border-color: #4f81bd;
+  color: #fff;
+}
+
+#qrcode {
+  width: 140px;
+  height: 140px;
+  max-width: 100%;
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px;
+}
+
+#studentUrl {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  color: #9ecbff;
+}
+
+/* A subtle hint on touch devices that the preview area is swipeable.
+   Purely cosmetic -- doesn't affect layout or sizing. */
+.preview-outer {
+  touch-action: pan-y;
+}
