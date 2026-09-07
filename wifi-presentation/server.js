@@ -204,6 +204,39 @@ const LOCAL_IP = getLocalIPAddress();
 const STUDENT_URL = `http://${LOCAL_IP}:${PORT}`;
 
 // ------------------------------------------------------------
+// PORT 80 REDIRECT (so people can skip typing ":3000")
+// ------------------------------------------------------------
+// Browsers default to port 80 when no port is typed. Since our
+// real app runs on PORT (3000 by default), anyone typing just
+// "http://presentation" or "http://<any-name-that-resolves-here>"
+// would otherwise hit nothing. This tiny separate HTTP server
+// listens on port 80 ONLY to redirect to the real server/port --
+// it doesn't know about slides, sockets, or the portal at all.
+//
+// Fails safe: if port 80 can't be bound (permissions on some
+// systems, or something else already using it, e.g. Skype/IIS),
+// we log a warning and move on. Everything else -- DNS, the main
+// app, captive portal -- keeps working; people just need to type
+// the ":3000" port again like before.
+if (PORT !== 80) {
+  const redirectServer = http.createServer((req, res) => {
+    res.writeHead(302, { Location: `http://${LOCAL_IP}:${PORT}${req.url}` });
+    res.end();
+  });
+
+  redirectServer.on("error", (err) => {
+    console.error("[redirect] Could not start port-80 redirect server:", err.message);
+    console.error(
+      "[redirect] This just means people will need to type the port (e.g. http://presentation:3000). Nothing else is affected."
+    );
+  });
+
+  redirectServer.listen(80, () => {
+    console.log(`[redirect] Port 80 -> ${STUDENT_URL} redirect active (no ":${PORT}" needed).`);
+  });
+}
+
+// ------------------------------------------------------------
 // LOCAL DNS SERVER (captive portal, step 1)
 // ------------------------------------------------------------
 // Resolves OS captive-portal probe domains (and everything else,
@@ -264,6 +297,60 @@ function markSignedIn(req) {
   if (!alreadySignedIn) {
     console.log(`[portal] ${ip} signed in -- captive prompt will not repeat this session.`);
   }
+}
+
+// ------------------------------------------------------------
+// WHITEBOARD STATE (Step 1 -- backend only, no UI yet)
+// ------------------------------------------------------------
+// Lets the presenter set the slides aside and draw/explain freely.
+// Mirrors the same pattern as slide state above: the server is the
+// single source of truth, so late joiners (or anyone reconnecting)
+// always see the current board exactly as it is, not just strokes
+// drawn after they joined.
+//
+// whiteboardActive: whether viewers should currently be shown the
+//   whiteboard instead of the current slide.
+//
+// whiteboardObjects: an ordered array of everything drawn so far.
+//   Each entry is a plain object shaped like:
+//     {
+//       id: string,              // unique id, so it could be
+//                                  targeted individually later
+//                                  (e.g. a future "undo last object"
+//                                  or "move this object" feature)
+//       type: "stroke" | "eraser-stroke" | "line" | "rectangle" | "circle",
+//       color: string,            // CSS color, ignored for eraser
+//       size: number,             // pen/eraser thickness in px
+//       points: [{x,y}, ...]      // used by "stroke"/"eraser-stroke"
+//                                  (a freehand path, coordinates as
+//                                  0..1 FRACTIONS of canvas width/
+//                                  height, not raw pixels -- so it
+//                                  still lines up correctly even if
+//                                  the presenter's and a viewer's
+//                                  screens are different sizes)
+//       start: {x,y}, end: {x,y}  // used by "line"/"rectangle"/
+//                                  "circle" instead of "points",
+//                                  also as 0..1 fractions
+//     }
+//
+// This step ONLY stores/broadcasts objects -- it has no opinion on
+// how they're drawn or rendered. That's Step 2 (presenter UI) and
+// Step 3 (viewer UI).
+let whiteboardActive = false;
+let whiteboardObjects = [];
+
+function sendWhiteboardStateTo(socket) {
+  socket.emit("whiteboard-state", {
+    active: whiteboardActive,
+    objects: whiteboardObjects,
+  });
+}
+
+function broadcastWhiteboardState() {
+  io.emit("whiteboard-state", {
+    active: whiteboardActive,
+    objects: whiteboardObjects,
+  });
 }
 
 // ------------------------------------------------------------
@@ -417,6 +504,7 @@ io.on("connection", (socket) => {
   console.log(`[connect] ${socket.id} connected. Viewers: ${viewerCount}`);
 
   sendCurrentSlideTo(socket);
+  sendWhiteboardStateTo(socket);
 
   socket.on("presenter-auth", (pin) => {
     if (pin === PRESENTER_PIN) {
@@ -462,6 +550,42 @@ io.on("connection", (socket) => {
     if (!isAuthenticatedPresenter()) return;
     currentSlideIndex = 0;
     broadcastCurrentSlide();
+  });
+
+  // ------------------------------------------------------------
+  // WHITEBOARD EVENTS (Step 1 -- backend only, no UI yet)
+  // ------------------------------------------------------------
+
+  socket.on("toggle-whiteboard", (active) => {
+    if (!isAuthenticatedPresenter()) return;
+    whiteboardActive = Boolean(active);
+    broadcastWhiteboardState();
+    console.log(`[whiteboard] ${whiteboardActive ? "activated" : "deactivated"} by ${socket.id}.`);
+  });
+
+  // `object` is expected to already be a fully-formed object as
+  // described in the WHITEBOARD STATE comment above. This handler
+  // deliberately does NOT validate its shape in detail yet (that's
+  // fine for now since only the presenter's own UI, built in Step 2,
+  // will ever send these) -- just assigns a server-side id and
+  // appends/broadcasts it.
+  socket.on("add-whiteboard-object", (object) => {
+    if (!isAuthenticatedPresenter()) return;
+    if (!object || typeof object !== "object") return;
+
+    const stored = {
+      ...object,
+      id: `wb-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    };
+    whiteboardObjects.push(stored);
+    io.emit("whiteboard-object-added", stored);
+  });
+
+  socket.on("clear-whiteboard", () => {
+    if (!isAuthenticatedPresenter()) return;
+    whiteboardObjects = [];
+    io.emit("whiteboard-cleared");
+    console.log(`[whiteboard] cleared by ${socket.id}.`);
   });
 
   socket.on("disconnect", () => {

@@ -29,6 +29,20 @@ const nextBtn = document.getElementById("nextBtn");
 const resetBtn = document.getElementById("resetBtn");
 const jumpGrid = document.getElementById("jumpGrid");
 
+const whiteboardCanvas = document.getElementById("whiteboardCanvas");
+const whiteboardToggleBtn = document.getElementById("whiteboardToggleBtn");
+const whiteboardToolbar = document.getElementById("whiteboardToolbar");
+const toolButtons = {
+  pen: document.getElementById("toolPenBtn"),
+  eraser: document.getElementById("toolEraserBtn"),
+  line: document.getElementById("toolLineBtn"),
+  rectangle: document.getElementById("toolRectBtn"),
+  circle: document.getElementById("toolCircleBtn"),
+};
+const wbColorInput = document.getElementById("wbColorInput");
+const wbSizeInput = document.getElementById("wbSizeInput");
+const wbClearBtn = document.getElementById("wbClearBtn");
+
 const studentUrlEl = document.getElementById("studentUrl");
 const qrImg = document.getElementById("qrcode");
 
@@ -135,6 +149,257 @@ function updateJumpGridActiveState(currentIndex) {
 nextBtn.addEventListener("click", () => socket.emit("next-slide"));
 prevBtn.addEventListener("click", () => socket.emit("prev-slide"));
 resetBtn.addEventListener("click", () => socket.emit("reset-slide"));
+
+// (Fullscreen button removed by request -- no fullscreenBtn element
+// exists in presenter.html anymore, so there's nothing to wire up
+// here. If you ever want it back, add a <button id="fullscreenBtn">
+// to presenter.html and re-add a listener here.)
+
+// --------------------------------------------------------
+// WHITEBOARD (Step 2 — presenter drawing UI)
+// --------------------------------------------------------
+// Coordinates are stored/sent as 0..1 FRACTIONS of the canvas's
+// own width/height, not raw pixels -- this is what the server
+// expects (see the WHITEBOARD STATE comment in server.js) so the
+// same drawing lines up correctly on every viewer's differently
+// sized screen. All conversion between real pixels (for actually
+// drawing on THIS screen) and fractions (for sending/storing)
+// happens right here.
+
+const ctx = whiteboardCanvas.getContext("2d");
+
+let currentTool = "pen"; // "pen" | "eraser" | "line" | "rectangle" | "circle"
+let isDrawing = false;
+let strokePoints = []; // used by pen/eraser, in fraction coords
+let shapeStart = null; // used by line/rectangle/circle, in fraction coords
+let shapeEnd = null;
+
+function setActiveTool(tool) {
+  currentTool = tool;
+  Object.entries(toolButtons).forEach(([name, btn]) => {
+    btn.classList.toggle("active", name === tool);
+  });
+}
+
+toolButtons.pen.addEventListener("click", () => setActiveTool("pen"));
+toolButtons.eraser.addEventListener("click", () => setActiveTool("eraser"));
+toolButtons.line.addEventListener("click", () => setActiveTool("line"));
+toolButtons.rectangle.addEventListener("click", () => setActiveTool("rectangle"));
+toolButtons.circle.addEventListener("click", () => setActiveTool("circle"));
+
+// Keeps the canvas's actual pixel resolution matching its displayed
+// CSS size (same box previewOuter/previewStage already use), so
+// drawing isn't blurry or misaligned. Called on toggle-on and resize.
+function resizeWhiteboardCanvas() {
+  const rect = previewOuter.getBoundingClientRect();
+  whiteboardCanvas.width = rect.width;
+  whiteboardCanvas.height = rect.height;
+  redrawWhiteboard();
+}
+
+function toFraction(clientX, clientY) {
+  const rect = whiteboardCanvas.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left) / rect.width,
+    y: (clientY - rect.top) / rect.height,
+  };
+}
+
+function toPixels(fractionPoint) {
+  return {
+    x: fractionPoint.x * whiteboardCanvas.width,
+    y: fractionPoint.y * whiteboardCanvas.height,
+  };
+}
+
+// Draws one object (already-completed stroke/shape from the server's
+// list, or a locally-in-progress one) onto the canvas. Does NOT clear
+// the canvas first -- callers decide when to clear.
+function drawObject(obj) {
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  if (obj.type === "stroke" || obj.type === "eraser-stroke") {
+    if (!obj.points || obj.points.length < 2) return;
+    ctx.globalCompositeOperation = obj.type === "eraser-stroke" ? "destination-out" : "source-over";
+    ctx.strokeStyle = obj.color || "#ffffff";
+    ctx.lineWidth = obj.size || 4;
+    ctx.beginPath();
+    const first = toPixels(obj.points[0]);
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < obj.points.length; i++) {
+      const p = toPixels(obj.points[i]);
+      ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+    ctx.globalCompositeOperation = "source-over";
+    return;
+  }
+
+  if (!obj.start || !obj.end) return;
+  const start = toPixels(obj.start);
+  const end = toPixels(obj.end);
+
+  ctx.strokeStyle = obj.color || "#ffffff";
+  ctx.lineWidth = obj.size || 4;
+  ctx.beginPath();
+
+  if (obj.type === "line") {
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+  } else if (obj.type === "rectangle") {
+    ctx.rect(start.x, start.y, end.x - start.x, end.y - start.y);
+  } else if (obj.type === "circle") {
+    const radius = Math.hypot(end.x - start.x, end.y - start.y);
+    ctx.arc(start.x, start.y, radius, 0, Math.PI * 2);
+  }
+
+  ctx.stroke();
+}
+
+// Full redraw of everything the server currently knows about, plus
+// (optionally) whatever's mid-drag right now locally. Simpler and
+// safer than trying to incrementally patch the canvas, and fast
+// enough at classroom-presentation scale (dozens/hundreds of
+// objects, not thousands).
+let knownWhiteboardObjects = [];
+
+function redrawWhiteboard() {
+  ctx.clearRect(0, 0, whiteboardCanvas.width, whiteboardCanvas.height);
+  knownWhiteboardObjects.forEach(drawObject);
+}
+
+function getEventPoint(e) {
+  if (e.touches && e.touches.length > 0) {
+    return { clientX: e.touches[0].clientX, clientY: e.touches[0].clientY };
+  }
+  return { clientX: e.clientX, clientY: e.clientY };
+}
+
+function handleDrawStart(e) {
+  isDrawing = true;
+  const { clientX, clientY } = getEventPoint(e);
+  const point = toFraction(clientX, clientY);
+
+  if (currentTool === "pen" || currentTool === "eraser") {
+    strokePoints = [point];
+  } else {
+    shapeStart = point;
+    shapeEnd = point;
+  }
+}
+
+function handleDrawMove(e) {
+  if (!isDrawing) return;
+  e.preventDefault(); // stop touch-scrolling while drawing
+  const { clientX, clientY } = getEventPoint(e);
+  const point = toFraction(clientX, clientY);
+
+  if (currentTool === "pen" || currentTool === "eraser") {
+    strokePoints.push(point);
+    redrawWhiteboard();
+    drawObject({
+      type: currentTool === "eraser" ? "eraser-stroke" : "stroke",
+      color: wbColorInput.value,
+      size: Number(wbSizeInput.value),
+      points: strokePoints,
+    });
+  } else {
+    shapeEnd = point;
+    redrawWhiteboard();
+    drawObject({
+      type: currentTool,
+      color: wbColorInput.value,
+      size: Number(wbSizeInput.value),
+      start: shapeStart,
+      end: shapeEnd,
+    });
+  }
+}
+
+function handleDrawEnd() {
+  if (!isDrawing) return;
+  isDrawing = false;
+
+  let finishedObject = null;
+
+  if (currentTool === "pen" || currentTool === "eraser") {
+    if (strokePoints.length >= 2) {
+      finishedObject = {
+        type: currentTool === "eraser" ? "eraser-stroke" : "stroke",
+        color: wbColorInput.value,
+        size: Number(wbSizeInput.value),
+        points: strokePoints,
+      };
+    }
+    strokePoints = [];
+  } else if (shapeStart && shapeEnd) {
+    finishedObject = {
+      type: currentTool,
+      color: wbColorInput.value,
+      size: Number(wbSizeInput.value),
+      start: shapeStart,
+      end: shapeEnd,
+    };
+    shapeStart = null;
+    shapeEnd = null;
+  }
+
+  if (finishedObject) {
+    socket.emit("add-whiteboard-object", finishedObject);
+  } else {
+    // Nothing worth keeping (e.g. a stray click) -- just redraw to
+    // clear any in-progress preview.
+    redrawWhiteboard();
+  }
+}
+
+whiteboardCanvas.addEventListener("mousedown", handleDrawStart);
+whiteboardCanvas.addEventListener("mousemove", handleDrawMove);
+window.addEventListener("mouseup", handleDrawEnd);
+
+whiteboardCanvas.addEventListener("touchstart", handleDrawStart, { passive: true });
+whiteboardCanvas.addEventListener("touchmove", handleDrawMove, { passive: false });
+whiteboardCanvas.addEventListener("touchend", handleDrawEnd);
+
+whiteboardToggleBtn.addEventListener("click", () => {
+  const turningOn = whiteboardCanvas.style.display === "none";
+  socket.emit("toggle-whiteboard", turningOn);
+});
+
+wbClearBtn.addEventListener("click", () => {
+  socket.emit("clear-whiteboard");
+});
+
+socket.on("whiteboard-state", (state) => {
+  knownWhiteboardObjects = state.objects || [];
+
+  const isActive = Boolean(state.active);
+  whiteboardCanvas.style.display = isActive ? "block" : "none";
+  whiteboardToolbar.style.display = isActive ? "block" : "none";
+  previewStage.style.display = isActive ? "none" : "block";
+  whiteboardToggleBtn.textContent = isActive ? "Back to Slides" : "Whiteboard";
+
+  if (isActive) {
+    resizeWhiteboardCanvas();
+  }
+});
+
+socket.on("whiteboard-object-added", (obj) => {
+  knownWhiteboardObjects.push(obj);
+  redrawWhiteboard();
+});
+
+socket.on("whiteboard-cleared", () => {
+  knownWhiteboardObjects = [];
+  redrawWhiteboard();
+});
+
+window.addEventListener("resize", () => {
+  if (whiteboardCanvas.style.display !== "none") {
+    resizeWhiteboardCanvas();
+  }
+});
 
 // --------------------------------------------------------
 // SWIPE GESTURES (touch devices) — swipe the preview left/right

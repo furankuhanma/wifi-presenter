@@ -21,13 +21,35 @@
       <h3 id="pSlideNumber">Slide 1 of 1</h3>
       <div class="preview-outer" id="previewOuter">
         <div class="stage" id="previewStage"></div>
+        <canvas id="whiteboardCanvas" style="display:none;"></canvas>
       </div>
 
       <div class="button-row">
         <button id="prevBtn">◀ Prev</button>
         <button id="nextBtn">Next ▶</button>
         <button id="resetBtn">Reset</button>
-       
+        <button id="whiteboardToggleBtn">Whiteboard</button>
+      </div>
+
+      <div id="whiteboardToolbar" style="display:none;">
+        <div class="button-row">
+          <button id="toolPenBtn" class="tool-btn active">Pen</button>
+          <button id="toolEraserBtn" class="tool-btn">Eraser</button>
+          <button id="toolLineBtn" class="tool-btn">Line</button>
+          <button id="toolRectBtn" class="tool-btn">Rectangle</button>
+          <button id="toolCircleBtn" class="tool-btn">Circle</button>
+        </div>
+        <div class="button-row">
+          <label style="display:flex; align-items:center; gap:6px;">
+            Color
+            <input type="color" id="wbColorInput" value="#ffffff" />
+          </label>
+          <label style="display:flex; align-items:center; gap:6px; flex:1 1 auto;">
+            Size
+            <input type="range" id="wbSizeInput" min="1" max="40" value="4" style="flex:1 1 auto;" />
+          </label>
+          <button id="wbClearBtn">Clear Board</button>
+        </div>
       </div>
 
       <h3>Jump to slide</h3>
