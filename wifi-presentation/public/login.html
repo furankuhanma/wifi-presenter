@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sign In / Sign Up</title>
+<link rel="stylesheet" href="/style.css" />
+<style>
+  /* Kept minimal and separate from style.css so it doesn't fight
+     with your existing presenter/viewer styling. */
+  .auth-wrap {
+    max-width: 360px;
+    margin: 10vh auto;
+    padding: 24px;
+    font-family: system-ui, sans-serif;
+  }
+  .auth-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .auth-tabs button {
+    flex: 1; padding: 8px; cursor: pointer;
+  }
+  .auth-tabs button.active { font-weight: bold; }
+  .auth-form { display: flex; flex-direction: column; gap: 10px; }
+  .auth-form input { padding: 8px; font-size: 16px; }
+  .auth-form button[type="submit"] { padding: 10px; font-size: 16px; cursor: pointer; }
+  #authMessage { min-height: 1.2em; font-size: 14px; }
+  #authMessage.error { color: #ff6b6b; }
+  #authMessage.success { color: #51cf66; }
+  #meBox { margin-top: 20px; font-size: 14px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+
+<div class="auth-wrap">
+  <h2 id="authTitle">Log In</h2>
+
+  <div class="auth-tabs">
+    <button id="tabLogin" class="active">Log In</button>
+    <button id="tabSignup">Sign Up</button>
+  </div>
+
+  <form class="auth-form" id="authForm">
+    <input id="username" type="text" placeholder="Username" autocomplete="username" required />
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password" required />
+    <button type="submit" id="submitBtn">Log In</button>
+  </form>
+
+  <div id="authMessage"></div>
+  <div id="meBox"></div>
+</div>
+
+<script src="/login.js"></script>
+</body>
+</html>

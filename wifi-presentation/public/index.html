@@ -2,27 +2,39 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Presentation Viewer</title>
-<link rel="stylesheet" href="/style.css" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Redirecting...</title>
+<style>
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    margin: 0;
+    font-family: system-ui, sans-serif;
+    background: #0b0b0f;
+    color: #eee;
+  }
+  .container {
+    text-align: center;
+  }
+  h1 {
+    margin-top: 0;
+  }
+  p {
+    color: #aaa;
+  }
+</style>
 </head>
 <body>
-
-<div class="control-bar status-bar" id="statusBar">
-  <span><span class="status-dot"></span><span id="slideNumber">Connecting…</span></span>
-  <span>
-    <button id="rotateBtn" title="Switch between landscape and portrait">Rotate</button>
-   
-  </span>
+<div class="container">
+  <h1>Redirecting...</h1>
+  <p>Please wait while we check your login status.</p>
 </div>
-
-<div class="stage-outer" id="stageOuter">
-  <div class="stage" id="stage"></div>
-  <canvas id="whiteboardCanvas" style="display:none;"></canvas>
-</div>
-
-<script src="/socket.io/socket.io.js"></script>
-<script src="/render.js"></script>
-<script src="/viewer.js"></script>
+<script>
+  // This page should rarely be seen -- the server redirects / to /login or /viewer
+  // based on token status. But as a fallback, redirect to login.
+  window.location.href = "/login";
+</script>
 </body>
 </html>

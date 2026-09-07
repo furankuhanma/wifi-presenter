@@ -10,6 +10,13 @@
 //
 // Reminder: this file can ask the server to change slides, but
 // the server is the one that actually enforces the PIN check.
+//
+// WHAT CHANGED FOR LOGIN: the socket connection now sends
+// `auth: { role: "presenter" }` on connect. This tells server.js's
+// Socket.IO auth gate (io.use(...)) to let this connection through
+// WITHOUT a participant login token -- the presenter still has to
+// clear the PIN check below exactly as before. Nothing else in this
+// file changed.
 // ============================================================
 
 const pinScreen = document.getElementById("pinScreen");
@@ -50,6 +57,7 @@ let totalSlidesKnown = 0;
 let jumpGridBuilt = false;
 
 const socket = io({
+  auth: { role: "presenter" }, // NEW: skips the login-token check server-side
   reconnection: true,
   reconnectionDelay: 1000,
   reconnectionDelayMax: 5000,

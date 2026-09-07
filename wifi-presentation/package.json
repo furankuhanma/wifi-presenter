@@ -7,13 +7,16 @@
     "start": "node server.js",
     "import": "node import-pptx.js"
   },
-"dependencies": {
-  "dns2": "^2.1.0",
-  "dotenv": "^16.4.5",
-  "express": "^4.19.2",
-  "fast-xml-parser": "^4.4.1",
-  "jszip": "^3.10.1",
-  "qrcode": "^1.5.3",
-  "socket.io": "^4.7.5"
-}
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "dns2": "^2.1.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "fast-xml-parser": "^4.4.1",
+    "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.1",
+    "mysql2": "^3.11.0",
+    "qrcode": "^1.5.3",
+    "socket.io": "^4.7.5"
+  }
 }

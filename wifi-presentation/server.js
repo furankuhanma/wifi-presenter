@@ -3,47 +3,24 @@
 // ============================================================
 // This is the "brain" of the whole application.
 //
-// It does 4 main jobs:
+// It does 5 main jobs now:
 //   1. Serves the HTML/CSS/JS files to browsers (Express).
 //   2. Keeps track of the ONE "official" current slide number.
 //   3. Talks to every connected phone/laptop in real time (Socket.IO).
 //   4. Makes sure only the presenter (who knows the PIN) can
 //      change slides.
+//   5. NEW: Runs live interactive Quizzes -- the presenter launches
+//      a question, every connected viewer gets it at the same
+//      instant, answers are graded server-side, XP/levels update
+//      in the database, and the presenter sees live status plus a
+//      results/leaderboard screen after each quiz.
 //
 // IMPORTANT CONCEPT:
-// No phone ever decides the slide on its own. Every device just
-// displays whatever number the SERVER says is current. This is
-// why late joiners and reconnecting phones always show the
-// correct slide automatically.
-//
-// CHANGE FROM THE PPTX-RENDERING VERSION:
-// Slides are no longer reconstructed from parsed PowerPoint data
-// (positioned text/shape/image elements). Instead, each slide is
-// just a plain image file -- public/images/slide-1.png,
-// slide-2.png, etc. -- and the server's only job re: slide CONTENT
-// is to find those files, put them in the right order, and tell
-// connected clients which image URL corresponds to the current
-// slide. slides.js / import-pptx.js are no longer used by the
-// running app (left in place in case you still want them for
-// regenerating images later).
-//
-// FILENAME MATCHING (updated):
-// Accepts BOTH naming styles so you don't have to rename exports
-// from Canva/PowerPoint:
-//   - "slide-1.png", "slide-2.jpg", ...  (original style)
-//   - "1.png", "2.jpg", ...              (plain numbered style)
-// Mixing both styles in the same folder works too -- everything is
-// just sorted by its extracted number.
-//
-// CAPTIVE PORTAL (NEW):
-// This server now also starts a small local DNS server (see
-// dns-server.js) so that phones connecting to the presentation
-// Wi-Fi can automatically get a "Sign in to network" prompt,
-// instead of everyone having to type in an IP address manually.
-// This is entirely additive -- if DNS fails to start for any
-// reason (permissions, port conflict, etc.), the presentation
-// and slide sync continue to work exactly as before; only the
-// auto-popup convenience is lost.
+// No phone ever decides the slide (or a quiz's correct answer) on
+// its own. Every device just displays whatever the SERVER says,
+// and every answer is graded by the SERVER. This is why late
+// joiners always show correctly, and why nobody can cheat by
+// editing their own browser's JS.
 // ============================================================
 
 require("dotenv").config(); // Loads variables from your .env file
@@ -56,6 +33,8 @@ const path = require("path");
 const QRCode = require("qrcode");
 const { Server } = require("socket.io");
 const { startDnsServer } = require("./dns-server");
+const authRoutes = require("./auth"); // signup/login routes + verifyToken
+const pool = require("./db"); // NEW: needed here directly for XP/quiz writes
 
 const app = express();
 const server = http.createServer(app);
@@ -69,24 +48,17 @@ const PRESENTER_PIN = process.env.PRESENTER_PIN || "1234";
 const DNS_PORT = process.env.DNS_PORT || 53;
 const IMAGES_DIR = path.join(__dirname, "public", "images");
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"];
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null; // NEW, optional (for AI-generated quiz questions)
 
 // ------------------------------------------------------------
 // SLIDE IMAGE DISCOVERY
 // ------------------------------------------------------------
-// Looks for image files in public/images/ named either:
-//   slide-<number>.<ext>   e.g. slide-1.png, slide-2.jpg
-//   <number>.<ext>         e.g. 1.png, 2.jpg
-// and returns their web-servable paths sorted in numeric slide
-// order (NOT alphabetical -- "2" / "slide-2" must sort before
-// "10" / "slide-10").
 function loadSlideImages() {
   if (!fs.existsSync(IMAGES_DIR)) {
     console.warn(`Warning: ${IMAGES_DIR} does not exist. No slides to show.`);
     return [];
   }
 
-  // Matches "slide-3.png" (group 1 = "3") OR "3.png" (group 2 = "3").
-  // Only one of the two groups will be set per match.
   const slideFilePattern = /^(?:slide-(\d+)|(\d+))\.(png|jpe?g|webp)$/i;
 
   const found = fs
@@ -108,9 +80,6 @@ function loadSlideImages() {
     );
   }
 
-  // Warn (rather than silently drop) if two files resolve to the same
-  // slide number -- e.g. both "3.png" and "slide-3.png" present -- since
-  // only one can win and it's easy to not notice otherwise.
   const seenNumbers = new Map();
   for (const f of found) {
     if (seenNumbers.has(f.number)) {
@@ -130,23 +99,6 @@ let slideImages = loadSlideImages();
 // ------------------------------------------------------------
 // LOCAL IP DETECTION
 // ------------------------------------------------------------
-// This is the #1 source of "phone can't reach the site" problems.
-// A dev machine often has MULTIPLE non-internal IPv4 addresses at
-// once: the real Wi-Fi/Ethernet adapter, PLUS virtual adapters from
-// WSL2, Docker, Hyper-V, or VirtualBox. Those virtual adapters are
-// NOT reachable from a phone on the same Wi-Fi -- they're NAT'd
-// behind the host OS. Blindly taking "the first non-internal IPv4
-// found" (like a naive version of this function does) can easily
-// grab a virtual adapter instead of the real one.
-//
-// We score each candidate and pick the best one:
-//   - Adapter name mentions Wi-Fi/WLAN/Ethernet -> best.
-//   - Address is in the common home/office LAN ranges
-//     (192.168.0.0/16 or 10.0.0.0/8) -> good.
-//   - Address is in 172.16.0.0/12 -> deprioritized. This exact
-//     range is where WSL2's default NAT network, Docker's default
-//     bridge, and Hyper-V's "Default Switch" all commonly live.
-//   - Everything else -> last resort.
 function scoreCandidate(name, address) {
   const lowerName = name.toLowerCase();
   const isNamedLikeRealAdapter = /(wi-?fi|wlan|ethernet|en0|eth0)/i.test(lowerName);
@@ -163,13 +115,13 @@ function scoreCandidate(name, address) {
   if (isNamedLikeRealAdapter) score += 100;
   if (isNamedLikeVirtualAdapter) score -= 100;
   if (in192168 || in10) score += 20;
-  if (in172Private) score -= 20; // common WSL2/Docker/Hyper-V range
+  if (in172Private) score -= 20;
   return score;
 }
 
 function getLocalIPAddress() {
   if (process.env.HOST_IP) {
-    return process.env.HOST_IP; // Manual override, if provided -- always wins
+    return process.env.HOST_IP;
   }
 
   const interfaces = os.networkInterfaces();
@@ -206,18 +158,6 @@ const STUDENT_URL = `http://${LOCAL_IP}:${PORT}`;
 // ------------------------------------------------------------
 // PORT 80 REDIRECT (so people can skip typing ":3000")
 // ------------------------------------------------------------
-// Browsers default to port 80 when no port is typed. Since our
-// real app runs on PORT (3000 by default), anyone typing just
-// "http://presentation" or "http://<any-name-that-resolves-here>"
-// would otherwise hit nothing. This tiny separate HTTP server
-// listens on port 80 ONLY to redirect to the real server/port --
-// it doesn't know about slides, sockets, or the portal at all.
-//
-// Fails safe: if port 80 can't be bound (permissions on some
-// systems, or something else already using it, e.g. Skype/IIS),
-// we log a warning and move on. Everything else -- DNS, the main
-// app, captive portal -- keeps working; people just need to type
-// the ":3000" port again like before.
 if (PORT !== 80) {
   const redirectServer = http.createServer((req, res) => {
     res.writeHead(302, { Location: `http://${LOCAL_IP}:${PORT}${req.url}` });
@@ -239,14 +179,20 @@ if (PORT !== 80) {
 // ------------------------------------------------------------
 // LOCAL DNS SERVER (captive portal, step 1)
 // ------------------------------------------------------------
-// Resolves OS captive-portal probe domains (and everything else,
-// since there's no real internet to forward to) to LOCAL_IP, so
-// connected phones get an automatic "Sign in to network" prompt.
-// This is additive and fails safe: if it can't bind (permissions,
-// port 53 already in use, etc.), the presentation/sync features
-// below are completely unaffected.
+let dnsServer = null;
 try {
-  startDnsServer(LOCAL_IP, DNS_PORT);
+  dnsServer = startDnsServer(LOCAL_IP, DNS_PORT);
+  dnsServer.on("error", (err) => {
+    console.error("[dns] Failed to start local DNS server:", err.message);
+    console.error(
+      "[dns] Captive-portal auto-redirect will not work, but the presentation itself will still run fine."
+    );
+    if (DNS_PORT < 1024) {
+      console.error(
+        "[dns] On macOS/Linux this usually means you need to run with sudo, or set DNS_PORT=5353 in .env."
+      );
+    }
+  });
 } catch (err) {
   console.error("[dns] Failed to start local DNS server:", err.message);
   console.error(
@@ -265,22 +211,17 @@ let currentSlideIndex = 0;
 const authenticatedPresenters = new Set();
 let viewerCount = 0;
 
+// Track authenticated viewer sockets by userId so we know who is
+// actually present / can be graded for a quiz (as opposed to
+// someone who is connected but not logged in -- shouldn't happen
+// given the auth gate, but this keeps quiz code defensive).
+const viewerSocketsByUserId = new Map(); // userId -> Set of socket.id
+
 // ------------------------------------------------------------
 // CAPTIVE PORTAL — "signed in" tracking (Step 2)
 // ------------------------------------------------------------
-// Once a device has loaded the /portal landing page, its IP is
-// added here so it stops getting the "Sign in to network" prompt
-// on later probe checks during the same session. See the note in
-// dns-server.js and the earlier design discussion: this is
-// IP-based (not MAC-based), which is simple and reliable for a
-// single classroom session, but resets if a device's IP changes
-// (e.g. reconnecting after a long time away). That's an accepted
-// tradeoff -- worst case, someone sees the sign-in prompt again.
 const signedInIPs = new Set();
 
-// Normalizes IPv4-mapped IPv6 addresses (e.g. "::ffff:192.168.1.5",
-// which is how Node sometimes reports IPv4 clients) down to the
-// plain IPv4 form, so the same device isn't tracked as two entries.
 function normalizeClientIP(req) {
   const raw = req.socket.remoteAddress || "";
   return raw.replace(/^::ffff:/, "");
@@ -302,40 +243,6 @@ function markSignedIn(req) {
 // ------------------------------------------------------------
 // WHITEBOARD STATE (Step 1 -- backend only, no UI yet)
 // ------------------------------------------------------------
-// Lets the presenter set the slides aside and draw/explain freely.
-// Mirrors the same pattern as slide state above: the server is the
-// single source of truth, so late joiners (or anyone reconnecting)
-// always see the current board exactly as it is, not just strokes
-// drawn after they joined.
-//
-// whiteboardActive: whether viewers should currently be shown the
-//   whiteboard instead of the current slide.
-//
-// whiteboardObjects: an ordered array of everything drawn so far.
-//   Each entry is a plain object shaped like:
-//     {
-//       id: string,              // unique id, so it could be
-//                                  targeted individually later
-//                                  (e.g. a future "undo last object"
-//                                  or "move this object" feature)
-//       type: "stroke" | "eraser-stroke" | "line" | "rectangle" | "circle",
-//       color: string,            // CSS color, ignored for eraser
-//       size: number,             // pen/eraser thickness in px
-//       points: [{x,y}, ...]      // used by "stroke"/"eraser-stroke"
-//                                  (a freehand path, coordinates as
-//                                  0..1 FRACTIONS of canvas width/
-//                                  height, not raw pixels -- so it
-//                                  still lines up correctly even if
-//                                  the presenter's and a viewer's
-//                                  screens are different sizes)
-//       start: {x,y}, end: {x,y}  // used by "line"/"rectangle"/
-//                                  "circle" instead of "points",
-//                                  also as 0..1 fractions
-//     }
-//
-// This step ONLY stores/broadcasts objects -- it has no opinion on
-// how they're drawn or rendered. That's Step 2 (presenter UI) and
-// Step 3 (viewer UI).
 let whiteboardActive = false;
 let whiteboardObjects = [];
 
@@ -351,6 +258,242 @@ function broadcastWhiteboardState() {
     active: whiteboardActive,
     objects: whiteboardObjects,
   });
+}
+
+// ------------------------------------------------------------
+// QUIZ STATE (NEW)
+// ------------------------------------------------------------
+// One quiz is "live" at a time. Shape:
+//
+// quizState = {
+//   id: string,
+//   question: string,
+//   type: "multiple_choice" | "true_false" | "identification",
+//   options: string[] | null,     // null for identification
+//   correctAnswer: string,        // never sent to viewers while active
+//   xp: number,
+//   difficulty: "easy" | "medium" | "hard",
+//   timeLimit: number | null,     // seconds, null = untimed
+//   startedAt: number,            // Date.now() ms
+//   active: boolean,
+//   responses: Map<userId, { username, answer, correct, timeMs, xpAwarded }>
+// }
+let quizState = null;
+let quizTimer = null;
+
+const VALID_QUIZ_TYPES = new Set(["multiple_choice", "true_false", "identification"]);
+const VALID_DIFFICULTIES = new Set(["easy", "medium", "hard"]);
+
+function levelForXp(xp) {
+  // Simple, tweakable leveling curve: 100 XP per level.
+  return Math.floor(xp / 100) + 1;
+}
+
+function normalizeAnswerForCompare(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function gradeAnswer(quiz, rawAnswer) {
+  if (quiz.type === "identification") {
+    // Accept a "|" separated list of acceptable answers in
+    // correctAnswer, e.g. "op-amp|operational amplifier".
+    const accepted = String(quiz.correctAnswer)
+      .split("|")
+      .map((s) => normalizeAnswerForCompare(s));
+    return accepted.includes(normalizeAnswerForCompare(rawAnswer));
+  }
+  // multiple_choice and true_false: exact match on the option string
+  return normalizeAnswerForCompare(rawAnswer) === normalizeAnswerForCompare(quiz.correctAnswer);
+}
+
+function currentViewerTotal() {
+  // Only authenticated (logged-in) viewers can participate in a
+  // quiz and count toward "total". The presenter console itself
+  // never counts here.
+  let total = 0;
+  for (const set of viewerSocketsByUserId.values()) {
+    if (set.size > 0) total++;
+  }
+  return total;
+}
+
+function broadcastQuizLiveStatus() {
+  if (!quizState) return;
+  const responded = quizState.responses.size;
+  const correctCount = [...quizState.responses.values()].filter((r) => r.correct).length;
+  const feed = [...quizState.responses.entries()]
+    .sort((a, b) => a[1].timeMs - b[1].timeMs)
+    .map(([userId, r]) => ({
+      username: r.username,
+      correct: r.correct,
+      timeMs: r.timeMs,
+    }));
+
+  io.to("presenters").emit("quiz-live-status", {
+    quizId: quizState.id,
+    responded,
+    total: currentViewerTotal(),
+    correctCount,
+    feed,
+  });
+}
+
+// Persists one user's quiz result to the database: bumps xp/level
+// and appends a small record to their quiz_results JSON history.
+async function persistQuizResultForUser(userId, resultEntry, xpAwarded) {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [rows] = await connection.query(
+      "SELECT xp, quiz_results FROM user_progress WHERE user_id = ? FOR UPDATE",
+      [userId]
+    );
+    if (rows.length === 0) {
+      await connection.rollback();
+      return null;
+    }
+
+    const row = rows[0];
+    const previousXp = row.xp || 0;
+    const previousResults = Array.isArray(row.quiz_results) ? row.quiz_results : [];
+
+    const newXp = previousXp + xpAwarded;
+    const newLevel = levelForXp(newXp);
+    const newResults = [...previousResults, resultEntry].slice(-200); // cap history length
+
+    await connection.query(
+      "UPDATE user_progress SET xp = ?, level = ?, quiz_results = ? WHERE user_id = ?",
+      [newXp, newLevel, JSON.stringify(newResults), userId]
+    );
+
+    await connection.commit();
+    return { xp: newXp, level: newLevel };
+  } catch (err) {
+    try {
+      await connection.rollback();
+    } catch (_) {
+      /* ignore */
+    }
+    console.error("[quiz] failed to persist result for user", userId, err);
+    return null;
+  } finally {
+    connection.release();
+  }
+}
+
+function clearQuizTimer() {
+  if (quizTimer) {
+    clearTimeout(quizTimer);
+    quizTimer = null;
+  }
+}
+
+function endQuiz() {
+  if (!quizState || !quizState.active) return;
+  quizState.active = false;
+  clearQuizTimer();
+
+  const responses = [...quizState.responses.entries()].map(([userId, r]) => ({
+    userId,
+    username: r.username,
+    answer: r.answer,
+    correct: r.correct,
+    timeMs: r.timeMs,
+    xpAwarded: r.xpAwarded,
+  }));
+
+  const total = currentViewerTotal();
+  const respondedCount = responses.length;
+  const correctResponses = responses.filter((r) => r.correct);
+  const accuracy = respondedCount > 0 ? correctResponses.length / respondedCount : 0;
+
+  const fastest = correctResponses.slice().sort((a, b) => a.timeMs - b.timeMs).slice(0, 5);
+
+  // Leaderboard for this quiz: correct answers first (fastest
+  // first), then incorrect answers (fastest first), then anyone
+  // who never answered.
+  const answeredUserIds = new Set(responses.map((r) => r.userId));
+  const notAnswered = [];
+  for (const [userId, set] of viewerSocketsByUserId.entries()) {
+    if (set.size > 0 && !answeredUserIds.has(userId)) {
+      notAnswered.push({ userId, username: null });
+    }
+  }
+
+  const leaderboard = [
+    ...correctResponses.slice().sort((a, b) => a.timeMs - b.timeMs),
+    ...responses.filter((r) => !r.correct).sort((a, b) => a.timeMs - b.timeMs),
+  ].map((r, i) => ({ rank: i + 1, ...r }));
+
+  const resultsPayload = {
+    quizId: quizState.id,
+    question: quizState.question,
+    correctAnswer: quizState.correctAnswer,
+    total,
+    responded: respondedCount,
+    notAnswered: notAnswered.length,
+    accuracy,
+    fastest,
+    leaderboard,
+  };
+
+  io.to("presenters").emit("quiz-results", resultsPayload);
+
+  // Let every viewer know the quiz is over (so late-answer UI can
+  // relax, and anyone who didn't answer sees the correct answer).
+  io.to("viewers").emit("quiz-ended", {
+    quizId: quizState.id,
+    correctAnswer: quizState.correctAnswer,
+  });
+
+  console.log(
+    `[quiz] ended "${quizState.question}" -- ${respondedCount}/${total} responded, ` +
+      `${(accuracy * 100).toFixed(0)}% accuracy.`
+  );
+}
+
+function launchQuiz(config) {
+  clearQuizTimer();
+
+  const id = `quiz-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  quizState = {
+    id,
+    question: config.question,
+    type: config.type,
+    options: config.type === "identification" ? null : config.options,
+    correctAnswer: config.correctAnswer,
+    xp: config.xp,
+    difficulty: config.difficulty,
+    timeLimit: config.timeLimit || null,
+    startedAt: Date.now(),
+    active: true,
+    responses: new Map(),
+  };
+
+  // What viewers get -- notably, NEVER the correct answer.
+  const viewerPayload = {
+    quizId: quizState.id,
+    question: quizState.question,
+    type: quizState.type,
+    options: quizState.options,
+    xp: quizState.xp,
+    difficulty: quizState.difficulty,
+    timeLimit: quizState.timeLimit,
+    startedAt: quizState.startedAt,
+  };
+
+  io.to("viewers").emit("quiz-question", viewerPayload);
+  broadcastQuizLiveStatus();
+
+  console.log(`[quiz] launched "${quizState.question}" (${quizState.type}, ${quizState.difficulty}).`);
+
+  if (quizState.timeLimit) {
+    quizTimer = setTimeout(() => {
+      endQuiz();
+    }, quizState.timeLimit * 1000);
+  }
 }
 
 // ------------------------------------------------------------
@@ -387,55 +530,164 @@ function broadcastViewerCount() {
 // EXPRESS SETUP (serving the frontend files)
 // ------------------------------------------------------------
 
+app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
+function validateTokenFromRequest(req) {
+  const authHeader = req.headers.authorization || "";
+  const match = authHeader.match(/^Bearer\s+(.+)$/);
+  if (!match) return null;
+  try {
+    return authRoutes.verifyToken(match[1]);
+  } catch (err) {
+    return null;
+  }
+}
+
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+  const token = req.query.token || req.headers.authorization?.split(" ")[1];
+
+  if (token) {
+    try {
+      authRoutes.verifyToken(token);
+      return res.redirect(`/viewer?token=${encodeURIComponent(token)}`);
+    } catch (err) {
+      // fall through to login
+    }
+  }
+
+  res.redirect("/login");
+});
+
+app.get("/viewer", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "viewer.html"));
 });
 
 app.get("/presenter", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "presenter.html"));
 });
 
+app.get("/login", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "login.html"));
+});
+
+app.use("/api/auth", authRoutes.router);
+
+// ------------------------------------------------------------
+// QUIZ: AI QUESTION GENERATION (NEW)
+// ------------------------------------------------------------
+// POST /api/quiz/generate  { topic, type, difficulty }
+// Presenter-only in practice (gated by the presenter console UI),
+// but this is a stateless helper endpoint -- it doesn't touch
+// quizState at all, it just returns a suggested question for the
+// presenter to review/edit before launching. If ANTHROPIC_API_KEY
+// isn't configured, it returns a clear error so the UI can fall
+// back to manual entry instead of hanging.
+app.post("/api/quiz/generate", async (req, res) => {
+  const { topic, type, difficulty } = req.body || {};
+
+  if (!ANTHROPIC_API_KEY) {
+    return res.status(503).json({
+      error:
+        "AI question generation isn't configured on this server. Set ANTHROPIC_API_KEY in .env, or create the question manually.",
+    });
+  }
+  if (!VALID_QUIZ_TYPES.has(type)) {
+    return res.status(400).json({ error: "Invalid question type." });
+  }
+  if (!VALID_DIFFICULTIES.has(difficulty)) {
+    return res.status(400).json({ error: "Invalid difficulty." });
+  }
+
+  const typeInstructions = {
+    multiple_choice:
+      'Return "options" as an array of exactly 4 short answer strings, and "correctAnswer" as the exact text of the correct option (must match one entry in "options" exactly).',
+    true_false:
+      'Return "options" as ["True", "False"], and "correctAnswer" as exactly "True" or "False".',
+    identification:
+      'Do not return "options" (omit it or set it to null). Return "correctAnswer" as the single best short answer (a few words at most).',
+  };
+
+  const systemPrompt =
+    "You are a quiz-question generator for a live classroom presentation tool. " +
+    "Respond with ONLY raw JSON, no markdown fences, no preamble. " +
+    'The JSON object must have exactly these keys: "question" (string), "options" (array of strings or null), "correctAnswer" (string).';
+
+  const userPrompt =
+    `Topic: ${topic || "the current lesson"}\n` +
+    `Difficulty: ${difficulty}\n` +
+    `Question type: ${type}\n` +
+    `${typeInstructions[type]}\n` +
+    "Keep the question concise and unambiguous, appropriate for a live in-class quiz.";
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 500,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userPrompt }],
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("[quiz-ai] Anthropic API error:", response.status, errText);
+      return res.status(502).json({ error: "AI generation failed. Please write the question manually." });
+    }
+
+    const data = await response.json();
+    const textBlock = (data.content || []).find((b) => b.type === "text");
+    if (!textBlock) {
+      return res.status(502).json({ error: "AI returned no usable content." });
+    }
+
+    const cleaned = textBlock.text.replace(/```json|```/g, "").trim();
+    let parsed;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (err) {
+      console.error("[quiz-ai] Could not parse AI JSON:", cleaned);
+      return res.status(502).json({ error: "AI response wasn't valid JSON. Please write the question manually." });
+    }
+
+    res.json({
+      question: parsed.question,
+      options: parsed.options || null,
+      correctAnswer: parsed.correctAnswer,
+    });
+  } catch (err) {
+    console.error("[quiz-ai] request failed:", err);
+    res.status(502).json({ error: "Could not reach the AI service." });
+  }
+});
+
 // ------------------------------------------------------------
 // CAPTIVE PORTAL — landing page + OS probe routes (Step 2)
 // ------------------------------------------------------------
-// PORTAL_URL is what phones' mini in-app browsers get sent to when
-// their OS decides "this network needs sign-in" (see dns-server.js
-// for how DNS makes the probe domains reach this server at all).
 const PORTAL_URL = `http://${LOCAL_IP}:${PORT}/portal`;
 
-// The landing page itself. Loading this page is what marks the
-// device as "signed in" for the rest of the session -- not just
-// resolving DNS to us, since that alone doesn't mean a person
-// actually saw/used the portal.
 app.get("/portal", (req, res) => {
   markSignedIn(req);
   res.sendFile(path.join(__dirname, "public", "portal.html"));
 });
 
-// --- iOS / macOS captive portal check ---
-// Apple's Captive Network Assistant fetches this exact path and
-// expects an exact "Success" response. Any other response (or a
-// redirect) makes it treat the network as requiring sign-in and
-// show that response's body in its built-in mini browser.
 app.get(["/hotspot-detect.html", "/library/test/success.html"], (req, res) => {
   if (isSignedIn(req)) {
     res
       .type("html")
       .send("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
   } else {
-    // Serve the portal page directly (rather than a redirect) since
-    // Apple's CNA mini-browser renders whatever body comes back from
-    // this exact URL.
     res.sendFile(path.join(__dirname, "public", "portal.html"));
   }
 });
 
-// --- Android captive portal check ---
-// Android expects an empty 204 response. Anything else (we use a
-// redirect) makes it show the "Sign in to network" notification and
-// open a browser to the redirect target.
 app.get(["/generate_204", "/gen_204"], (req, res) => {
   if (isSignedIn(req)) {
     res.status(204).end();
@@ -444,10 +696,6 @@ app.get(["/generate_204", "/gen_204"], (req, res) => {
   }
 });
 
-// --- Windows captive portal check ---
-// Windows expects the exact text "Microsoft Connect Test" from
-// connecttest.txt (newer) or "Microsoft NCSI" from ncsi.txt (older).
-// A redirect/mismatch triggers the "Sign in" notification.
 app.get("/connecttest.txt", (req, res) => {
   if (isSignedIn(req)) {
     res.type("txt").send("Microsoft Connect Test");
@@ -471,8 +719,6 @@ app.get("/api/config", (req, res) => {
   });
 });
 
-// Lets the presenter console re-scan public/images/ without restarting
-// the server (e.g. after dropping in new/renamed slide images).
 app.post("/api/reload-slides", (req, res) => {
   slideImages = loadSlideImages();
   currentSlideIndex = clampSlideIndex(currentSlideIndex);
@@ -493,6 +739,46 @@ app.get("/api/qr.png", async (req, res) => {
   }
 });
 
+// GET /api/leaderboard -- overall (all-time) XP leaderboard, used
+// by the presenter's Quiz results panel alongside the per-quiz
+// leaderboard.
+app.get("/api/leaderboard", async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT u.username, p.xp, p.level
+       FROM users u JOIN user_progress p ON p.user_id = u.id
+       ORDER BY p.xp DESC LIMIT 20`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("[leaderboard] error:", err);
+    res.status(500).json({ error: "Could not load leaderboard." });
+  }
+});
+
+// ------------------------------------------------------------
+// SOCKET.IO AUTH GATE
+// ------------------------------------------------------------
+io.use((socket, next) => {
+  const handshakeAuth = socket.handshake.auth || {};
+
+  if (handshakeAuth.role === "presenter") {
+    return next();
+  }
+
+  const token = handshakeAuth.token;
+  if (!token) {
+    return next(new Error("AUTH_REQUIRED"));
+  }
+
+  try {
+    socket.user = authRoutes.verifyToken(token);
+    return next();
+  } catch (err) {
+    return next(new Error("AUTH_REQUIRED"));
+  }
+});
+
 // ------------------------------------------------------------
 // SOCKET.IO — REAL-TIME LOGIC
 // ------------------------------------------------------------
@@ -501,18 +787,50 @@ io.on("connection", (socket) => {
   viewerCount++;
   broadcastViewerCount();
 
+  const isPresenterSocket = socket.handshake.auth && socket.handshake.auth.role === "presenter";
+
+  if (!isPresenterSocket && socket.user) {
+    socket.join("viewers");
+    const userId = socket.user.userId;
+    if (!viewerSocketsByUserId.has(userId)) {
+      viewerSocketsByUserId.set(userId, new Set());
+    }
+    viewerSocketsByUserId.get(userId).add(socket.id);
+  }
+
   console.log(`[connect] ${socket.id} connected. Viewers: ${viewerCount}`);
 
   sendCurrentSlideTo(socket);
   sendWhiteboardStateTo(socket);
 
+  // Catch late joiners up on a quiz already in progress.
+  if (quizState && quizState.active && socket.rooms.has("viewers")) {
+    socket.emit("quiz-question", {
+      quizId: quizState.id,
+      question: quizState.question,
+      type: quizState.type,
+      options: quizState.options,
+      xp: quizState.xp,
+      difficulty: quizState.difficulty,
+      timeLimit: quizState.timeLimit,
+      startedAt: quizState.startedAt,
+    });
+  }
+
   socket.on("presenter-auth", (pin) => {
     if (pin === PRESENTER_PIN) {
       authenticatedPresenters.add(socket.id);
+      socket.join("presenters");
       viewerCount = Math.max(0, viewerCount - 1);
       broadcastViewerCount();
       socket.emit("auth-result", { success: true });
       console.log(`[auth] ${socket.id} authenticated as presenter.`);
+
+      // Bring a (re)connecting presenter up to speed on any quiz
+      // already in progress or the most recently finished one.
+      if (quizState) {
+        broadcastQuizLiveStatus();
+      }
     } else {
       socket.emit("auth-result", {
         success: false,
@@ -553,7 +871,7 @@ io.on("connection", (socket) => {
   });
 
   // ------------------------------------------------------------
-  // WHITEBOARD EVENTS (Step 1 -- backend only, no UI yet)
+  // WHITEBOARD EVENTS
   // ------------------------------------------------------------
 
   socket.on("toggle-whiteboard", (active) => {
@@ -563,12 +881,6 @@ io.on("connection", (socket) => {
     console.log(`[whiteboard] ${whiteboardActive ? "activated" : "deactivated"} by ${socket.id}.`);
   });
 
-  // `object` is expected to already be a fully-formed object as
-  // described in the WHITEBOARD STATE comment above. This handler
-  // deliberately does NOT validate its shape in detail yet (that's
-  // fine for now since only the presenter's own UI, built in Step 2,
-  // will ever send these) -- just assigns a server-side id and
-  // appends/broadcasts it.
   socket.on("add-whiteboard-object", (object) => {
     if (!isAuthenticatedPresenter()) return;
     if (!object || typeof object !== "object") return;
@@ -588,6 +900,102 @@ io.on("connection", (socket) => {
     console.log(`[whiteboard] cleared by ${socket.id}.`);
   });
 
+  // ------------------------------------------------------------
+  // QUIZ EVENTS (NEW)
+  // ------------------------------------------------------------
+
+  // Presenter launches a quiz. Payload:
+  // { question, type, options, correctAnswer, xp, difficulty, timeLimit }
+  socket.on("quiz-launch", (config) => {
+    if (!isAuthenticatedPresenter()) return;
+    if (!config || typeof config !== "object") return;
+
+    const question = String(config.question || "").trim();
+    const type = config.type;
+    const difficulty = config.difficulty;
+    const xp = Math.max(0, parseInt(config.xp, 10) || 0);
+    const timeLimit = config.timeLimit ? Math.max(5, parseInt(config.timeLimit, 10)) : null;
+    const correctAnswer = String(config.correctAnswer || "").trim();
+
+    if (!question || !VALID_QUIZ_TYPES.has(type) || !VALID_DIFFICULTIES.has(difficulty) || !correctAnswer) {
+      socket.emit("quiz-error", { message: "Missing or invalid quiz fields." });
+      return;
+    }
+
+    let options = null;
+    if (type === "multiple_choice") {
+      options = Array.isArray(config.options) ? config.options.map((o) => String(o).trim()).filter(Boolean) : [];
+      if (options.length < 2) {
+        socket.emit("quiz-error", { message: "Multiple choice needs at least 2 options." });
+        return;
+      }
+      if (!options.some((o) => normalizeAnswerForCompare(o) === normalizeAnswerForCompare(correctAnswer))) {
+        socket.emit("quiz-error", { message: "Correct answer must match one of the options exactly." });
+        return;
+      }
+    } else if (type === "true_false") {
+      options = ["True", "False"];
+    }
+
+    launchQuiz({ question, type, options, correctAnswer, xp, difficulty, timeLimit });
+  });
+
+  // Presenter manually ends the current quiz early.
+  socket.on("quiz-end", () => {
+    if (!isAuthenticatedPresenter()) return;
+    endQuiz();
+  });
+
+  // Viewer submits an answer.
+  // Payload: { quizId, answer }
+  socket.on("quiz-answer", async (payload) => {
+    if (isPresenterSocket || !socket.user) return;
+    if (!quizState || !quizState.active) return;
+    if (!payload || payload.quizId !== quizState.id) return;
+
+    const userId = socket.user.userId;
+    const username = socket.user.username;
+
+    // One answer per user per quiz -- ignore repeats/double-taps.
+    if (quizState.responses.has(userId)) return;
+
+    const timeMs = Date.now() - quizState.startedAt;
+    const correct = gradeAnswer(quizState, payload.answer);
+    const xpAwarded = correct ? quizState.xp : 0;
+
+    quizState.responses.set(userId, {
+      username,
+      answer: payload.answer,
+      correct,
+      timeMs,
+      xpAwarded,
+    });
+
+    broadcastQuizLiveStatus();
+
+    const resultEntry = {
+      quizId: quizState.id,
+      question: quizState.question,
+      answer: payload.answer,
+      correct,
+      timeMs,
+      xpAwarded,
+      at: new Date().toISOString(),
+    };
+
+    const updated = await persistQuizResultForUser(userId, resultEntry, xpAwarded);
+
+    socket.emit("quiz-feedback", {
+      quizId: quizState.id,
+      correct,
+      correctAnswer: quizState.correctAnswer,
+      xpAwarded,
+      timeMs,
+      newXp: updated ? updated.xp : null,
+      newLevel: updated ? updated.level : null,
+    });
+  });
+
   socket.on("disconnect", () => {
     if (authenticatedPresenters.has(socket.id)) {
       authenticatedPresenters.delete(socket.id);
@@ -595,8 +1003,17 @@ io.on("connection", (socket) => {
       return;
     }
 
+    if (socket.user) {
+      const set = viewerSocketsByUserId.get(socket.user.userId);
+      if (set) {
+        set.delete(socket.id);
+        if (set.size === 0) viewerSocketsByUserId.delete(socket.user.userId);
+      }
+    }
+
     viewerCount = Math.max(0, viewerCount - 1);
     broadcastViewerCount();
+    if (quizState && quizState.active) broadcastQuizLiveStatus();
     console.log(`[disconnect] viewer ${socket.id} disconnected. Viewers: ${viewerCount}`);
   });
 });
@@ -611,6 +1028,7 @@ server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Presenter PIN: ${PRESENTER_PIN}`);
   console.log(`Loaded ${slideImages.length} slide image(s) from public/images/`);
+  console.log(`AI quiz generation: ${ANTHROPIC_API_KEY ? "enabled" : "disabled (set ANTHROPIC_API_KEY to enable)"}`);
   console.log("");
   console.log("On THIS computer, open:");
   console.log(`  Presenter view: http://localhost:${PORT}/presenter`);

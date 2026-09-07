@@ -109,6 +109,10 @@ function startDnsServer(localIP, port = 53) {
     console.error("[dns] request error:", error);
   });
 
+  server.on("error", (error) => {
+    console.error("[dns] Server error:", error.message);
+  });
+
   server.listen({ udp: { port, address: "0.0.0.0" } });
 
   server.on("listening", () => {

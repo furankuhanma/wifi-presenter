@@ -5,6 +5,47 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Presenter Console</title>
 <link rel="stylesheet" href="/style.css" />
+<style>
+  /* Scoped styles for the new Quiz panel -- kept inline so this
+     doesn't depend on editing your existing style.css structure. */
+  #quizPanel { margin-top: 24px; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 16px; }
+  #quizPanel h3 { margin-bottom: 8px; }
+  .quiz-mode-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .quiz-mode-tabs button { flex: 1; padding: 8px; cursor: pointer; }
+  .quiz-mode-tabs button.active { font-weight: bold; text-decoration: underline; }
+  .quiz-field { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
+  .quiz-field label { font-size: 13px; opacity: 0.85; }
+  .quiz-field input, .quiz-field select, .quiz-field textarea {
+    padding: 8px; font-size: 14px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.05); color: inherit;
+  }
+  .quiz-options-list { display: flex; flex-direction: column; gap: 6px; }
+  .quiz-option-row { display: flex; align-items: center; gap: 8px; }
+  .quiz-option-row input[type="radio"] { flex: 0 0 auto; }
+  .quiz-option-row input[type="text"] { flex: 1 1 auto; }
+  .quiz-row { display: flex; gap: 10px; }
+  .quiz-row .quiz-field { flex: 1; }
+  #quizLaunchBtn { margin-top: 8px; padding: 10px; font-weight: bold; cursor: pointer; }
+  #quizEndBtn { padding: 10px; cursor: pointer; background: #7a1f1f; color: #fff; border: none; border-radius: 4px; }
+  #quizError { color: #ff6b6b; font-size: 13px; min-height: 1.2em; }
+  #quizAiStatus, #quizFormStatus { font-size: 13px; opacity: 0.85; min-height: 1.2em; }
+
+  #quizLiveStatus { margin-top: 16px; }
+  #quizLiveStatus .quiz-progress-bar { height: 10px; border-radius: 5px; background: rgba(255,255,255,0.1); overflow: hidden; }
+  #quizLiveStatus .quiz-progress-fill { height: 100%; background: #4caf50; width: 0%; transition: width 0.2s ease; }
+  #quizLiveFeed { max-height: 160px; overflow-y: auto; margin-top: 8px; font-size: 13px; }
+  #quizLiveFeed .feed-row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  #quizLiveFeed .feed-row.correct { color: #7ee787; }
+  #quizLiveFeed .feed-row.incorrect { color: #ff8a8a; }
+
+  #quizResultsPanel { margin-top: 16px; }
+  #quizResultsPanel table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  #quizResultsPanel th, #quizResultsPanel td { text-align: left; padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+  .quiz-stat-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+  .quiz-stat { background: rgba(255,255,255,0.06); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+  .quiz-stat strong { display: block; font-size: 18px; }
+  .hidden { display: none !important; }
+</style>
 </head>
 <body>
 
@@ -63,6 +104,137 @@
       <h3>Student URL</h3>
       <p id="studentUrl">Loading…</p>
       <img id="qrcode" alt="QR code to join" />
+
+      <!-- ==================== QUIZ PANEL (NEW) ==================== -->
+      <div id="quizPanel">
+        <h3>Live Quiz</h3>
+
+        <div id="quizBuilder">
+          <div class="quiz-mode-tabs">
+            <button id="quizModeManual" type="button" class="active">Manual</button>
+            <button id="quizModeAi" type="button">AI-Generated</button>
+          </div>
+
+          <!-- AI generation controls (topic -> fills the same form below) -->
+          <div id="quizAiFields" class="hidden">
+            <div class="quiz-field">
+              <label>Topic / prompt for the AI</label>
+              <input id="quizAiTopic" type="text" placeholder="e.g. Non-inverting amplifier gain formula" />
+            </div>
+            <button id="quizAiGenerateBtn" type="button">Generate Question</button>
+            <div id="quizAiStatus"></div>
+          </div>
+
+          <div class="quiz-field">
+            <label>Question</label>
+            <textarea id="quizQuestion" rows="2" placeholder="Type the question…"></textarea>
+          </div>
+
+          <div class="quiz-row">
+            <div class="quiz-field">
+              <label>Question Type</label>
+              <select id="quizType">
+                <option value="multiple_choice">Multiple Choice</option>
+                <option value="true_false">True / False</option>
+                <option value="identification">Identification</option>
+              </select>
+            </div>
+            <div class="quiz-field">
+              <label>Difficulty</label>
+              <select id="quizDifficulty">
+                <option value="easy">Easy</option>
+                <option value="medium" selected>Medium</option>
+                <option value="hard">Hard</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Multiple choice options + correct-answer radio -->
+          <div id="quizMcqFields" class="quiz-field">
+            <label>Options (select the correct one)</label>
+            <div class="quiz-options-list">
+              <div class="quiz-option-row">
+                <input type="radio" name="quizMcqCorrect" value="0" checked />
+                <input type="text" class="quiz-mcq-option" placeholder="Option 1" />
+              </div>
+              <div class="quiz-option-row">
+                <input type="radio" name="quizMcqCorrect" value="1" />
+                <input type="text" class="quiz-mcq-option" placeholder="Option 2" />
+              </div>
+              <div class="quiz-option-row">
+                <input type="radio" name="quizMcqCorrect" value="2" />
+                <input type="text" class="quiz-mcq-option" placeholder="Option 3 (optional)" />
+              </div>
+              <div class="quiz-option-row">
+                <input type="radio" name="quizMcqCorrect" value="3" />
+                <input type="text" class="quiz-mcq-option" placeholder="Option 4 (optional)" />
+              </div>
+            </div>
+          </div>
+
+          <!-- True/False correct-answer picker -->
+          <div id="quizTfFields" class="quiz-field hidden">
+            <label>Correct Answer</label>
+            <select id="quizTfCorrect">
+              <option value="True">True</option>
+              <option value="False">False</option>
+            </select>
+          </div>
+
+          <!-- Identification correct-answer text -->
+          <div id="quizIdFields" class="quiz-field hidden">
+            <label>Correct Answer (accepts case-insensitive match; separate alternates with "|")</label>
+            <input id="quizIdCorrect" type="text" placeholder="e.g. op-amp|operational amplifier" />
+          </div>
+
+          <div class="quiz-row">
+            <div class="quiz-field">
+              <label>XP Reward</label>
+              <input id="quizXp" type="number" min="0" value="10" />
+            </div>
+            <div class="quiz-field">
+              <label>Time Limit (seconds, optional)</label>
+              <input id="quizTimeLimit" type="number" min="5" placeholder="No limit" />
+            </div>
+          </div>
+
+          <div id="quizError"></div>
+          <div id="quizFormStatus"></div>
+          <button id="quizLaunchBtn">Launch Quiz to All Devices</button>
+        </div>
+
+        <!-- Live status while a quiz is running -->
+        <div id="quizLiveStatus" class="hidden">
+          <h4 id="quizLiveTitle">Quiz in progress…</h4>
+          <div class="quiz-progress-bar"><div class="quiz-progress-fill" id="quizProgressFill"></div></div>
+          <p id="quizLiveCount">0 / 0 responded</p>
+          <div id="quizLiveFeed"></div>
+          <button id="quizEndBtn">End Quiz Now</button>
+        </div>
+
+        <!-- Results after a quiz ends -->
+        <div id="quizResultsPanel" class="hidden">
+          <h4>Results</h4>
+          <div class="quiz-stat-row">
+            <div class="quiz-stat">Accuracy<strong id="quizStatAccuracy">–</strong></div>
+            <div class="quiz-stat">Responded<strong id="quizStatResponded">–</strong></div>
+            <div class="quiz-stat">Correct Answer<strong id="quizStatCorrectAnswer">–</strong></div>
+          </div>
+
+          <h4 style="margin-top:12px;">Fastest Correct Responses</h4>
+          <table id="quizFastestTable">
+            <thead><tr><th>#</th><th>Student</th><th>Time</th></tr></thead>
+            <tbody></tbody>
+          </table>
+
+          <h4 style="margin-top:12px;">Leaderboard (this quiz)</h4>
+          <table id="quizLeaderboardTable">
+            <thead><tr><th>#</th><th>Student</th><th>Answer</th><th>Result</th><th>Time</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <!-- ==================== END QUIZ PANEL ==================== -->
     </div>
   </div>
 </div>
@@ -70,5 +242,6 @@
 <script src="/socket.io/socket.io.js"></script>
 <script src="/render.js"></script>
 <script src="/presenter.js"></script>
+<script src="/presenter-quiz.js"></script>
 </body>
 </html>
