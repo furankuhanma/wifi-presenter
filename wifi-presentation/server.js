@@ -34,6 +34,16 @@
 //   - "1.png", "2.jpg", ...              (plain numbered style)
 // Mixing both styles in the same folder works too -- everything is
 // just sorted by its extracted number.
+//
+// CAPTIVE PORTAL (NEW):
+// This server now also starts a small local DNS server (see
+// dns-server.js) so that phones connecting to the presentation
+// Wi-Fi can automatically get a "Sign in to network" prompt,
+// instead of everyone having to type in an IP address manually.
+// This is entirely additive -- if DNS fails to start for any
+// reason (permissions, port conflict, etc.), the presentation
+// and slide sync continue to work exactly as before; only the
+// auto-popup convenience is lost.
 // ============================================================
 
 require("dotenv").config(); // Loads variables from your .env file
@@ -45,6 +55,7 @@ const os = require("os"); // Built into Node.js -- used to find your local IP
 const path = require("path");
 const QRCode = require("qrcode");
 const { Server } = require("socket.io");
+const { startDnsServer } = require("./dns-server");
 
 const app = express();
 const server = http.createServer(app);
@@ -55,6 +66,7 @@ const io = new Server(server); // Attach Socket.IO to the same server
 // ------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 const PRESENTER_PIN = process.env.PRESENTER_PIN || "1234";
+const DNS_PORT = process.env.DNS_PORT || 53;
 const IMAGES_DIR = path.join(__dirname, "public", "images");
 const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"];
 
@@ -192,12 +204,67 @@ const LOCAL_IP = getLocalIPAddress();
 const STUDENT_URL = `http://${LOCAL_IP}:${PORT}`;
 
 // ------------------------------------------------------------
+// LOCAL DNS SERVER (captive portal, step 1)
+// ------------------------------------------------------------
+// Resolves OS captive-portal probe domains (and everything else,
+// since there's no real internet to forward to) to LOCAL_IP, so
+// connected phones get an automatic "Sign in to network" prompt.
+// This is additive and fails safe: if it can't bind (permissions,
+// port 53 already in use, etc.), the presentation/sync features
+// below are completely unaffected.
+try {
+  startDnsServer(LOCAL_IP, DNS_PORT);
+} catch (err) {
+  console.error("[dns] Failed to start local DNS server:", err.message);
+  console.error(
+    "[dns] Captive-portal auto-redirect will not work, but the presentation itself will still run fine."
+  );
+  console.error(
+    "[dns] On macOS/Linux this usually means you need to run with sudo, or set DNS_PORT=5353 in .env."
+  );
+}
+
+// ------------------------------------------------------------
 // SERVER-SIDE STATE
 // ------------------------------------------------------------
 let currentSlideIndex = 0;
 
 const authenticatedPresenters = new Set();
 let viewerCount = 0;
+
+// ------------------------------------------------------------
+// CAPTIVE PORTAL — "signed in" tracking (Step 2)
+// ------------------------------------------------------------
+// Once a device has loaded the /portal landing page, its IP is
+// added here so it stops getting the "Sign in to network" prompt
+// on later probe checks during the same session. See the note in
+// dns-server.js and the earlier design discussion: this is
+// IP-based (not MAC-based), which is simple and reliable for a
+// single classroom session, but resets if a device's IP changes
+// (e.g. reconnecting after a long time away). That's an accepted
+// tradeoff -- worst case, someone sees the sign-in prompt again.
+const signedInIPs = new Set();
+
+// Normalizes IPv4-mapped IPv6 addresses (e.g. "::ffff:192.168.1.5",
+// which is how Node sometimes reports IPv4 clients) down to the
+// plain IPv4 form, so the same device isn't tracked as two entries.
+function normalizeClientIP(req) {
+  const raw = req.socket.remoteAddress || "";
+  return raw.replace(/^::ffff:/, "");
+}
+
+function isSignedIn(req) {
+  return signedInIPs.has(normalizeClientIP(req));
+}
+
+function markSignedIn(req) {
+  const ip = normalizeClientIP(req);
+  const alreadySignedIn = signedInIPs.has(ip);
+  signedInIPs.add(ip);
+  if (!alreadySignedIn) {
+    console.log(`[portal] ${ip} signed in -- captive prompt will not repeat this session.`);
+  }
+}
 
 // ------------------------------------------------------------
 // HELPER FUNCTIONS
@@ -241,6 +308,73 @@ app.get("/", (req, res) => {
 
 app.get("/presenter", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "presenter.html"));
+});
+
+// ------------------------------------------------------------
+// CAPTIVE PORTAL — landing page + OS probe routes (Step 2)
+// ------------------------------------------------------------
+// PORTAL_URL is what phones' mini in-app browsers get sent to when
+// their OS decides "this network needs sign-in" (see dns-server.js
+// for how DNS makes the probe domains reach this server at all).
+const PORTAL_URL = `http://${LOCAL_IP}:${PORT}/portal`;
+
+// The landing page itself. Loading this page is what marks the
+// device as "signed in" for the rest of the session -- not just
+// resolving DNS to us, since that alone doesn't mean a person
+// actually saw/used the portal.
+app.get("/portal", (req, res) => {
+  markSignedIn(req);
+  res.sendFile(path.join(__dirname, "public", "portal.html"));
+});
+
+// --- iOS / macOS captive portal check ---
+// Apple's Captive Network Assistant fetches this exact path and
+// expects an exact "Success" response. Any other response (or a
+// redirect) makes it treat the network as requiring sign-in and
+// show that response's body in its built-in mini browser.
+app.get(["/hotspot-detect.html", "/library/test/success.html"], (req, res) => {
+  if (isSignedIn(req)) {
+    res
+      .type("html")
+      .send("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+  } else {
+    // Serve the portal page directly (rather than a redirect) since
+    // Apple's CNA mini-browser renders whatever body comes back from
+    // this exact URL.
+    res.sendFile(path.join(__dirname, "public", "portal.html"));
+  }
+});
+
+// --- Android captive portal check ---
+// Android expects an empty 204 response. Anything else (we use a
+// redirect) makes it show the "Sign in to network" notification and
+// open a browser to the redirect target.
+app.get(["/generate_204", "/gen_204"], (req, res) => {
+  if (isSignedIn(req)) {
+    res.status(204).end();
+  } else {
+    res.redirect(302, PORTAL_URL);
+  }
+});
+
+// --- Windows captive portal check ---
+// Windows expects the exact text "Microsoft Connect Test" from
+// connecttest.txt (newer) or "Microsoft NCSI" from ncsi.txt (older).
+// A redirect/mismatch triggers the "Sign in" notification.
+app.get("/connecttest.txt", (req, res) => {
+  if (isSignedIn(req)) {
+    res.type("txt").send("Microsoft Connect Test");
+  } else {
+    res.redirect(302, PORTAL_URL);
+  }
+});
+
+app.get("/ncsi.txt", (req, res) => {
+  if (isSignedIn(req)) {
+    res.type("txt").send("Microsoft NCSI");
+  } else {
+    res.redirect(302, PORTAL_URL);
+  }
 });
 
 app.get("/api/config", (req, res) => {

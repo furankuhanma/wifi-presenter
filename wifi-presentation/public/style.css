@@ -116,7 +116,7 @@ html, body {
 }
 
 /* On very narrow phones, shrink the status bar text/buttons a touch
-   so "Rotate" + "Fullscreen" don't wrap or overflow the screen width. */
+  so the controls don't wrap or overflow the screen width. */
 @media (max-width: 380px) {
   .control-bar {
     font-size: 12px;

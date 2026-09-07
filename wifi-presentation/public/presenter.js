@@ -27,7 +27,6 @@ const previewStage = document.getElementById("previewStage");
 const prevBtn = document.getElementById("prevBtn");
 const nextBtn = document.getElementById("nextBtn");
 const resetBtn = document.getElementById("resetBtn");
-const fullscreenBtn = document.getElementById("fullscreenBtn");
 const jumpGrid = document.getElementById("jumpGrid");
 
 const studentUrlEl = document.getElementById("studentUrl");
@@ -136,14 +135,6 @@ function updateJumpGridActiveState(currentIndex) {
 nextBtn.addEventListener("click", () => socket.emit("next-slide"));
 prevBtn.addEventListener("click", () => socket.emit("prev-slide"));
 resetBtn.addEventListener("click", () => socket.emit("reset-slide"));
-
-fullscreenBtn.addEventListener("click", () => {
-  if (!document.fullscreenElement) {
-    document.documentElement.requestFullscreen?.().catch(() => {});
-  } else {
-    document.exitFullscreen?.();
-  }
-});
 
 // --------------------------------------------------------
 // SWIPE GESTURES (touch devices) — swipe the preview left/right

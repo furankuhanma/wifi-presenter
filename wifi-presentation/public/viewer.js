@@ -6,9 +6,8 @@
 //   2. Render whatever slide the server says is "current" -- a
 //      single pre-rendered image (see render.js).
 //   3. Show a connection status indicator.
-//   4. Let the student toggle fullscreen and landscape/portrait
-//      fit -- purely a local display preference, doesn't affect
-//      the server or other viewers.
+//   4. Let the student switch landscape/portrait fit as a local
+//      display preference that doesn't affect the server or other viewers.
 //
 // This file never decides which slide to show -- it only
 // displays whatever the server sends via "slide-update".
@@ -28,7 +27,6 @@ const slideNumberEl = document.getElementById("slideNumber");
 const stageOuter = document.getElementById("stageOuter");
 const stage = document.getElementById("stage");
 const rotateBtn = document.getElementById("rotateBtn");
-const fullscreenBtn = document.getElementById("fullscreenBtn");
 
 let isRotated = false;
 let rotationAutoPicked = false;
@@ -108,31 +106,13 @@ new MutationObserver(maybeAutoPickRotation).observe(stage, {
 });
 
 // --------------------------------------------------------
-// ORIENTATION + FULLSCREEN CONTROLS
+// ORIENTATION CONTROLS
 // --------------------------------------------------------
 
 rotateBtn.addEventListener("click", () => {
   isRotated = !isRotated;
   fitStage(stageOuter, stage, isRotated);
 });
-
-fullscreenBtn.addEventListener("click", () => {
-  if (!document.fullscreenElement) {
-    document.documentElement.requestFullscreen?.().catch(() => {
-      // Some mobile browsers (notably iOS Safari) don't support the
-      // Fullscreen API at all -- requestFullscreen is either missing
-      // or silently rejects. The page still fills the viewport via
-      // position:fixed/100dvh in style.css, so visually it's already
-      // "full screen" even without the native API succeeding.
-    });
-  } else {
-    document.exitFullscreen?.();
-  }
-});
-
-document.addEventListener("fullscreenchange", () =>
-  fitStage(stageOuter, stage, isRotated)
-);
 
 // Note: render.js's shared visualViewport/resize/orientationchange
 // listeners already re-fit this stage automatically on viewport
