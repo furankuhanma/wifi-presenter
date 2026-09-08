@@ -497,6 +497,50 @@ function launchQuiz(config) {
 }
 
 // ------------------------------------------------------------
+// LEADERBOARD (NEW)
+// ------------------------------------------------------------
+// Fetches the top-ranked users by XP and pushes the list to every
+// connected viewer. Called whenever a user's XP changes so the
+// Viewer UI's leaderboard panel stays live without polling.
+async function broadcastLeaderboardUpdate() {
+  try {
+    const [rows] = await pool.query(
+      `SELECT u.username, p.xp, p.level
+       FROM users u JOIN user_progress p ON p.user_id = u.id
+       ORDER BY p.xp DESC LIMIT 20`
+    );
+    const leaderboard = rows.map((row, i) => ({
+      rank: i + 1,
+      username: row.username,
+      xp: row.xp,
+      level: row.level,
+    }));
+    io.to("viewers").emit("leaderboard-update", leaderboard);
+  } catch (err) {
+    console.error("[leaderboard] broadcast error:", err);
+  }
+}
+
+async function sendLeaderboardTo(socket) {
+  try {
+    const [rows] = await pool.query(
+      `SELECT u.username, p.xp, p.level
+       FROM users u JOIN user_progress p ON p.user_id = u.id
+       ORDER BY p.xp DESC LIMIT 20`
+    );
+    const leaderboard = rows.map((row, i) => ({
+      rank: i + 1,
+      username: row.username,
+      xp: row.xp,
+      level: row.level,
+    }));
+    socket.emit("leaderboard-update", leaderboard);
+  } catch (err) {
+    console.error("[leaderboard] send error:", err);
+  }
+}
+
+// ------------------------------------------------------------
 // HELPER FUNCTIONS
 // ------------------------------------------------------------
 
@@ -803,6 +847,10 @@ io.on("connection", (socket) => {
   sendCurrentSlideTo(socket);
   sendWhiteboardStateTo(socket);
 
+    sendCurrentSlideTo(socket);
+  sendWhiteboardStateTo(socket);
+  if (!isPresenterSocket && socket.user) sendLeaderboardTo(socket);
+
   // Catch late joiners up on a quiz already in progress.
   if (quizState && quizState.active && socket.rooms.has("viewers")) {
     socket.emit("quiz-question", {
@@ -983,7 +1031,10 @@ io.on("connection", (socket) => {
       at: new Date().toISOString(),
     };
 
-    const updated = await persistQuizResultForUser(userId, resultEntry, xpAwarded);
+
+
+        const updated = await persistQuizResultForUser(userId, resultEntry, xpAwarded);
+    if (updated) broadcastLeaderboardUpdate();
 
     socket.emit("quiz-feedback", {
       quizId: quizState.id,

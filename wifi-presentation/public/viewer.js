@@ -25,6 +25,57 @@ function startViewer(token) {
   let isRotated = false;
   let rotationAutoPicked = false;
 
+
+    // --------------------------------------------------------
+  // LEADERBOARD (NEW)
+  // --------------------------------------------------------
+  function decodeUsernameFromToken(t) {
+    try {
+      const payload = JSON.parse(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+      return payload.username || null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  const currentUsername = decodeUsernameFromToken(token);
+
+  const leaderboardBtn = document.getElementById("leaderboardBtn");
+  const leaderboardPanel = document.getElementById("leaderboardPanel");
+  const leaderboardClose = document.getElementById("leaderboardClose");
+  const leaderboardList = document.getElementById("leaderboardList");
+
+  function renderLeaderboard(entries) {
+    if (!leaderboardList) return;
+    leaderboardList.innerHTML = "";
+
+    entries.forEach((entry) => {
+      const row = document.createElement("div");
+      row.className = "leaderboard-row";
+      if (entry.rank <= 3) row.classList.add("top-rank");
+      if (currentUsername && entry.username === currentUsername) row.classList.add("current-user");
+
+      row.innerHTML = `
+        <span class="lb-rank">#${entry.rank}</span>
+        <span class="lb-username">${entry.username}</span>
+        <span class="lb-level">Lvl ${entry.level}</span>
+        <span class="lb-xp">${entry.xp} XP</span>
+      `;
+      leaderboardList.appendChild(row);
+    });
+  }
+
+  if (leaderboardBtn && leaderboardPanel) {
+    leaderboardBtn.addEventListener("click", () => {
+      leaderboardPanel.classList.toggle("open");
+    });
+  }
+  if (leaderboardClose && leaderboardPanel) {
+    leaderboardClose.addEventListener("click", () => {
+      leaderboardPanel.classList.remove("open");
+    });
+  }
+
   const socket = io({
     auth: { token },
     reconnection: true,
@@ -59,6 +110,7 @@ function startViewer(token) {
   }
 
   socket.on("connect", setStatusConnected);
+    socket.on("leaderboard-update", renderLeaderboard);
   socket.on("disconnect", setStatusReconnecting);
   socket.io.on("reconnect_attempt", setStatusReconnecting);
   socket.io.on("reconnect", () => {

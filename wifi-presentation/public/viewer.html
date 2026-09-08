@@ -66,8 +66,73 @@
   #quizFeedback { margin-top: 20px; text-align: center; font-size: 18px; }
   #quizFeedback.correct { color: #7ee787; }
   #quizFeedback.incorrect { color: #ff8a8a; }
-  #quizWaiting { margin-top: 20px; text-align: center; opacity: 0.75; font-size: 14px; }
-</style>
+
+
+  /* ==================== LEADERBOARD (NEW) ==================== */
+  #leaderboardPanel {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-width: 360px;
+    background: #0b0f1e;
+    color: #fff;
+    font-family: system-ui, sans-serif;
+    z-index: 9500;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+    box-shadow: -8px 0 24px rgba(0,0,0,0.4);
+  }
+  #leaderboardPanel.open { transform: translateX(0); }
+  #leaderboardHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 18px;
+    border-bottom: 1px solid rgba(255,255,255,0.12);
+  }
+  #leaderboardHeader h2 { margin: 0; font-size: 18px; }
+  #leaderboardClose {
+    background: none;
+    border: none;
+    color: #fff;
+    font-size: 22px;
+    cursor: pointer;
+    line-height: 1;
+  }
+  #leaderboardList {
+    overflow-y: auto;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .leaderboard-row {
+    display: grid;
+    grid-template-columns: 40px 1fr auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.05);
+    font-size: 14px;
+  }
+  .leaderboard-row .lb-rank { font-weight: bold; opacity: 0.8; }
+  .leaderboard-row .lb-username { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .leaderboard-row .lb-level { opacity: 0.7; font-size: 12px; }
+  .leaderboard-row .lb-xp { font-weight: 600; }
+  .leaderboard-row.top-rank {
+    background: rgba(255, 215, 0, 0.12);
+    border: 1px solid rgba(255, 215, 0, 0.4);
+  }
+  .leaderboard-row.top-rank .lb-rank { color: #ffd700; }
+  .leaderboard-row.current-user {
+    background: rgba(79, 158, 255, 0.18);
+    border: 1px solid rgba(79, 158, 255, 0.6);
+  }</style>
 </head>
 <body>
 
@@ -92,16 +157,15 @@
   <div class="control-bar status-bar" id="statusBar">
     <span><span class="status-dot"></span><span id="slideNumber">Connecting…</span></span>
     <span>
+      <button id="leaderboardBtn" title="View leaderboard">Leaderboard</button>
       <button id="rotateBtn" title="Switch between landscape and portrait">Rotate</button>
     </span>
   </div>
-
   <div class="stage-outer" id="stageOuter">
     <div class="stage" id="stage"></div>
     <canvas id="whiteboardCanvas" style="display:none;"></canvas>
   </div>
 
-  <!-- ==================== QUIZ OVERLAY (NEW) ==================== -->
   <div id="quizOverlay">
     <div id="quizMeta">
       <span id="quizDifficultyBadge">Medium · 10 XP</span>
@@ -110,6 +174,24 @@
     <div id="quizQuestionText"></div>
 
     <div id="quizOptionsList" style="display:none;"></div>
+
+    <form id="quizIdentificationForm" style="display:none;">
+      <input id="quizIdentificationInput" type="text" placeholder="Type your answer…" autocomplete="off" />
+      <button id="quizSubmitBtn" type="submit">Submit Answer</button>
+    </form>
+
+    <div id="quizWaiting" style="display:none;">Answer submitted -- waiting for results…</div>
+    <div id="quizFeedback" style="display:none;"></div>
+  </div>
+
+  <!-- ==================== LEADERBOARD (NEW) ==================== -->
+  <div id="leaderboardPanel">
+    <div id="leaderboardHeader">
+      <h2>Leaderboard</h2>
+      <button id="leaderboardClose" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div id="leaderboardList"></div>
+  </div>
 
     <form id="quizIdentificationForm" style="display:none;">
       <input id="quizIdentificationInput" type="text" placeholder="Type your answer…" autocomplete="off" />
