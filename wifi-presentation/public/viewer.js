@@ -277,6 +277,7 @@ function startViewer(token) {
   rotateBtn.addEventListener("click", () => {
     isRotated = !isRotated;
     fitStage(stageOuter, stage, isRotated);
+    resizeWhiteboardCanvas();
   });
 
   // --------------------------------------------------------
@@ -381,6 +382,15 @@ function startViewer(token) {
       resizeWhiteboardCanvas();
     }
   });
+
+  // Also handle visualViewport changes (mobile address bar hide/show, etc.)
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", () => {
+      if (whiteboardCanvas && whiteboardCanvas.style.display !== "none") {
+        resizeWhiteboardCanvas();
+      }
+    });
+  }
 }
 
 window.startViewer = startViewer;
