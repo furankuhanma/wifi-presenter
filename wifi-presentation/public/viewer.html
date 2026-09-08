@@ -66,7 +66,7 @@
   #quizFeedback { margin-top: 20px; text-align: center; font-size: 18px; }
   #quizFeedback.correct { color: #7ee787; }
   #quizFeedback.incorrect { color: #ff8a8a; }
-
+  #quizWaiting { margin-top: 20px; text-align: center; opacity: 0.75; font-size: 14px; }
 
   /* ==================== LEADERBOARD (NEW) ==================== */
   #leaderboardPanel {
@@ -112,18 +112,34 @@
   }
   .leaderboard-row {
     display: grid;
-    grid-template-columns: 40px 1fr auto auto;
-    align-items: center;
-    gap: 10px;
+    grid-template-columns: 40px 1fr minmax(80px, 1fr) auto auto;
+    align-items: flex-start;
+    gap: 8px;
     padding: 10px 12px;
     border-radius: 8px;
     background: rgba(255,255,255,0.05);
     font-size: 14px;
   }
-  .leaderboard-row .lb-rank { font-weight: bold; opacity: 0.8; }
-  .leaderboard-row .lb-username { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .leaderboard-row .lb-level { opacity: 0.7; font-size: 12px; }
-  .leaderboard-row .lb-xp { font-weight: 600; }
+  .leaderboard-row .lb-rank { font-weight: bold; opacity: 0.8; padding-top: 2px; }
+  .leaderboard-row .lb-username { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-top: 2px; }
+  .leaderboard-row .lb-badges { 
+    font-size: 15px; 
+    display: flex; 
+    gap: 4px; 
+    align-items: center;
+    flex-wrap: wrap;
+    min-height: 24px;
+    align-content: flex-start;
+  }
+  .leaderboard-row .lb-badges span { cursor: pointer; }
+  .badge-icon-clickable {
+    transition: transform 0.2s ease, filter 0.2s ease;
+  }
+  .badge-icon-clickable:active {
+    transform: scale(1.2);
+  }
+  .leaderboard-row .lb-level { opacity: 0.7; font-size: 12px; padding-top: 2px; }
+  .leaderboard-row .lb-xp { font-weight: 600; padding-top: 2px; }
   .leaderboard-row.top-rank {
     background: rgba(255, 215, 0, 0.12);
     border: 1px solid rgba(255, 215, 0, 0.4);
@@ -132,7 +148,125 @@
   .leaderboard-row.current-user {
     background: rgba(79, 158, 255, 0.18);
     border: 1px solid rgba(79, 158, 255, 0.6);
-  }</style>
+  }
+
+  /* ==================== BADGE TOAST (NEW) ==================== */
+  #badgeToast {
+    position: fixed;
+    top: -80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: linear-gradient(135deg, #ffd700, #ff9d00);
+    color: #1a1200;
+    font-weight: bold;
+    font-family: system-ui, sans-serif;
+    padding: 14px 22px;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    z-index: 10000;
+    transition: top 0.4s ease;
+    font-size: 15px;
+  }
+  #badgeToast.show {
+    top: 20px;
+    animation: badgePulse 0.5s ease;
+  }
+  @keyframes badgePulse {
+    0% { transform: translateX(-50%) scale(0.8); opacity: 0; }
+    60% { transform: translateX(-50%) scale(1.08); opacity: 1; }
+    100% { transform: translateX(-50%) scale(1); }
+  }
+
+  /* ==================== BADGE DETAILS MODAL ==================== */
+  #badgeModal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  #badgeModal.open {
+    display: flex;
+  }
+  #badgeModalContent {
+    background: #0b0f1e;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 16px;
+    padding: 28px;
+    max-width: 340px;
+    width: 100%;
+    color: #fff;
+    font-family: system-ui, sans-serif;
+    text-align: center;
+    animation: modalSlideIn 0.3s ease;
+  }
+  @keyframes modalSlideIn {
+    from { transform: scale(0.9); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+  #badgeModalContent .badge-icon {
+    font-size: 64px;
+    margin-bottom: 16px;
+  }
+  #badgeModalContent h2 {
+    margin: 0 0 8px 0;
+    font-size: 22px;
+  }
+  #badgeModalContent .badge-rarity {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: bold;
+    margin-bottom: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  #badgeModalContent .badge-rarity.Legendary {
+    background: rgba(255, 215, 0, 0.2);
+    color: #ffd700;
+    border: 1px solid rgba(255, 215, 0, 0.5);
+  }
+  #badgeModalContent .badge-rarity.Epic {
+    background: rgba(138, 43, 226, 0.2);
+    color: #da70d6;
+    border: 1px solid rgba(138, 43, 226, 0.5);
+  }
+  #badgeModalContent .badge-rarity.Rare {
+    background: rgba(79, 158, 255, 0.2);
+    color: #4f9eff;
+    border: 1px solid rgba(79, 158, 255, 0.5);
+  }
+  #badgeModalContent .badge-rarity.Common {
+    background: rgba(255, 255, 255, 0.1);
+    color: #ccc;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+  }
+  #badgeModalContent p {
+    margin: 0 0 20px 0;
+    font-size: 14px;
+    line-height: 1.5;
+    opacity: 0.85;
+  }
+  #badgeModalClose {
+    display: inline-block;
+    padding: 10px 24px;
+    background: rgba(79, 158, 255, 0.2);
+    border: 1px solid rgba(79, 158, 255, 0.5);
+    color: #4f9eff;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  #badgeModalClose:active {
+    background: rgba(79, 158, 255, 0.3);
+  }
+</style>
 </head>
 <body>
 
@@ -152,6 +286,18 @@
   </div>
 </div>
 
+<div id="badgeToast"></div>
+
+<div id="badgeModal">
+  <div id="badgeModalContent">
+    <div class="badge-icon" id="badgeModalIcon"></div>
+    <h2 id="badgeModalName"></h2>
+    <div class="badge-rarity" id="badgeModalRarity"></div>
+    <p id="badgeModalDescription"></p>
+    <button id="badgeModalClose" type="button">Close</button>
+  </div>
+</div>
+
 <div id="presentationRoot" style="display:none;">
 
   <div class="control-bar status-bar" id="statusBar">
@@ -161,11 +307,13 @@
       <button id="rotateBtn" title="Switch between landscape and portrait">Rotate</button>
     </span>
   </div>
+
   <div class="stage-outer" id="stageOuter">
     <div class="stage" id="stage"></div>
     <canvas id="whiteboardCanvas" style="display:none;"></canvas>
   </div>
 
+  <!-- ==================== QUIZ OVERLAY (NEW) ==================== -->
   <div id="quizOverlay">
     <div id="quizMeta">
       <span id="quizDifficultyBadge">Medium · 10 XP</span>
@@ -184,22 +332,13 @@
     <div id="quizFeedback" style="display:none;"></div>
   </div>
 
-  <!-- ==================== LEADERBOARD (NEW) ==================== -->
+  <!-- ==================== LEADERBOARD + BADGES (NEW) ==================== -->
   <div id="leaderboardPanel">
     <div id="leaderboardHeader">
       <h2>Leaderboard</h2>
       <button id="leaderboardClose" type="button" aria-label="Close">&times;</button>
     </div>
     <div id="leaderboardList"></div>
-  </div>
-
-    <form id="quizIdentificationForm" style="display:none;">
-      <input id="quizIdentificationInput" type="text" placeholder="Type your answer…" autocomplete="off" />
-      <button id="quizSubmitBtn" type="submit">Submit Answer</button>
-    </form>
-
-    <div id="quizWaiting" style="display:none;">Answer submitted -- waiting for results…</div>
-    <div id="quizFeedback" style="display:none;"></div>
   </div>
 
 </div>

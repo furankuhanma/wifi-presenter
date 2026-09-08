@@ -7,6 +7,9 @@
 //   3. Show a connection status indicator.
 //   4. Let the student switch landscape/portrait fit.
 //   5. Mirror the presenter's whiteboard, read-only, when active.
+//   6. NEW: Show a live leaderboard panel (XP/level/rank).
+//   7. NEW: Show earned badges (permanent + dynamic) and play an
+//      unlock animation/toast when a new permanent badge is earned.
 //
 // NEW: after creating the socket, this file exposes it as
 // `window.appSocket` and fires a "viewer-socket-ready" event so
@@ -25,8 +28,7 @@ function startViewer(token) {
   let isRotated = false;
   let rotationAutoPicked = false;
 
-
-    // --------------------------------------------------------
+  // --------------------------------------------------------
   // LEADERBOARD (NEW)
   // --------------------------------------------------------
   function decodeUsernameFromToken(t) {
@@ -45,6 +47,22 @@ function startViewer(token) {
   const leaderboardClose = document.getElementById("leaderboardClose");
   const leaderboardList = document.getElementById("leaderboardList");
 
+  function renderBadgeIcons(entry) {
+    const icons = [];
+    if (entry && entry.dynamicBadge && entry.dynamicBadge.icon) {
+      const badgeId = entry.dynamicBadge.id || 'genius';
+      icons.push(`<span class="badge-icon-clickable" data-badge-id="${badgeId}" style="cursor: pointer;">${entry.dynamicBadge.icon}</span>`);
+    }
+    if (entry && entry.permanentBadges && Array.isArray(entry.permanentBadges)) {
+      entry.permanentBadges.forEach((b) => {
+        if (b && b.icon && b.id) {
+          icons.push(`<span class="badge-icon-clickable" data-badge-id="${b.id}" style="cursor: pointer;">${b.icon}</span>`);
+        }
+      });
+    }
+    return icons.join("");
+  }
+
   function renderLeaderboard(entries) {
     if (!leaderboardList) return;
     leaderboardList.innerHTML = "";
@@ -55,13 +73,25 @@ function startViewer(token) {
       if (entry.rank <= 3) row.classList.add("top-rank");
       if (currentUsername && entry.username === currentUsername) row.classList.add("current-user");
 
+      const badgeIcons = renderBadgeIcons(entry);
       row.innerHTML = `
-        <span class="lb-rank">#${entry.rank}</span>
-        <span class="lb-username">${entry.username}</span>
-        <span class="lb-level">Lvl ${entry.level}</span>
-        <span class="lb-xp">${entry.xp} XP</span>
+        <div class="lb-rank">#${entry.rank}</div>
+        <div class="lb-username">${entry.username}</div>
+        <div class="lb-badges">${badgeIcons}</div>
+        <div class="lb-level">L${entry.level}</div>
+        <div class="lb-xp">${entry.xp} XP</div>
       `;
       leaderboardList.appendChild(row);
+    });
+  }
+
+  // Add event delegation for badge clicks
+  if (leaderboardList) {
+    leaderboardList.addEventListener("click", (e) => {
+      if (e.target.classList.contains("badge-icon-clickable")) {
+        const badgeId = e.target.getAttribute("data-badge-id");
+        showBadgeModal(badgeId);
+      }
     });
   }
 
@@ -74,6 +104,68 @@ function startViewer(token) {
     leaderboardClose.addEventListener("click", () => {
       leaderboardPanel.classList.remove("open");
     });
+  }
+
+  // --------------------------------------------------------
+  // BADGES (NEW) - Now displayed inline in leaderboard
+  // --------------------------------------------------------
+  const BADGE_DESCRIPTIONS = {
+    good_listener: { name: "Good Listener", icon: "👂", rarity: "Rare", description: "Be the only participant who answers a quiz correctly while everyone else answers incorrectly." },
+    on_fire: { name: "On Fire", icon: "🔥", rarity: "Rare", description: "Get 3 correct answers consecutively." },
+    brainstorm: { name: "Brainstorm", icon: "🧠", rarity: "Epic", description: "Get 4 correct answers consecutively." },
+    perfect_run: { name: "Perfect Run", icon: "💎", rarity: "Legendary", description: "Get 5 correct answers consecutively without any wrong answers." },
+    lightning: { name: "Lightning", icon: "⚡", rarity: "Rare", description: "Get the fastest correct answer." },
+    perfect_shot: { name: "Perfect Shot", icon: "🎯", rarity: "Epic", description: "Get 5 correct answers without any incorrect answers." },
+    bright_mind: { name: "Bright Mind", icon: "💡", rarity: "Common", description: "Get your first correct answer." },
+    first_step: { name: "First Step", icon: "🙋", rarity: "Common", description: "Answer your first quiz." },
+    dedicated: { name: "Dedicated", icon: "📚", rarity: "Rare", description: "Participate in every quiz during the presentation." },
+    until_the_end: { name: "Until the End", icon: "⏳", rarity: "Rare", description: "Stay connected until the presentation ends." },
+    fast_starter: { name: "Fast Starter", icon: "🚀", rarity: "Common", description: "Be among the first participants to answer a quiz." },
+    comeback: { name: "Comeback", icon: "🏅", rarity: "Epic", description: "Significantly improve your leaderboard position during the presentation." },
+    quiz_warrior: { name: "Quiz Warrior", icon: "💎", rarity: "Epic", description: "Reach a high number of correct answers." },
+    genius: { name: "Genius", icon: "🧠", rarity: "Legendary", description: "Genius man siguro ning bataa ni" },
+    diligent: { name: "Diligent", icon: "🔥", rarity: "Epic", description: "Current Rank #2 with the second-highest XP." },
+    lowkey: { name: "Lowkey", icon: "🥷", rarity: "Common", description: "Actively participates but remains outside the Top 2." },
+    bulakbol: { name: "Bulakbol", icon: "💤", rarity: "Lowest", description: "Default badge for users who have not earned another badge." },
+  };
+
+  let myDynamicBadge = null;
+  let myPermanentBadges = [];
+
+  const badgeToastEl = document.getElementById("badgeToast");
+  const badgeModal = document.getElementById("badgeModal");
+  const badgeModalContent = document.getElementById("badgeModalContent");
+  const badgeModalClose = document.getElementById("badgeModalClose");
+
+  function showBadgeModal(badgeId) {
+    const badgeInfo = BADGE_DESCRIPTIONS[badgeId];
+    if (!badgeInfo || !badgeModal) return;
+
+    document.getElementById("badgeModalIcon").textContent = badgeInfo.icon;
+    document.getElementById("badgeModalName").textContent = badgeInfo.name;
+    document.getElementById("badgeModalRarity").textContent = badgeInfo.rarity;
+    document.getElementById("badgeModalRarity").className = `badge-rarity ${badgeInfo.rarity}`;
+    document.getElementById("badgeModalDescription").textContent = badgeInfo.description;
+
+    badgeModal.classList.add("open");
+  }
+
+  function closeBadgeModal() {
+    if (badgeModal) badgeModal.classList.remove("open");
+  }
+
+  if (badgeModalClose) badgeModalClose.addEventListener("click", closeBadgeModal);
+  if (badgeModal) badgeModal.addEventListener("click", (e) => {
+    if (e.target === badgeModal) closeBadgeModal();
+  });
+
+  function showBadgeToast(badge) {
+    if (!badgeToastEl) return;
+    badgeToastEl.textContent = `${badge.icon} Badge Unlocked: ${badge.name}!`;
+    badgeToastEl.classList.remove("show");
+    void badgeToastEl.offsetWidth; // restart animation
+    badgeToastEl.classList.add("show");
+    setTimeout(() => badgeToastEl.classList.remove("show"), 4000);
   }
 
   const socket = io({
@@ -110,11 +202,32 @@ function startViewer(token) {
   }
 
   socket.on("connect", setStatusConnected);
-    socket.on("leaderboard-update", renderLeaderboard);
   socket.on("disconnect", setStatusReconnecting);
   socket.io.on("reconnect_attempt", setStatusReconnecting);
   socket.io.on("reconnect", () => {
     setStatusConnected();
+  });
+
+  // --------------------------------------------------------
+  // LEADERBOARD + BADGE LISTENERS (NEW)
+  // --------------------------------------------------------
+
+  socket.on("leaderboard-update", renderLeaderboard);
+
+  socket.on("your-rank-update", (data) => {
+    myDynamicBadge = data.dynamicBadge;
+    myPermanentBadges = data.permanentBadges || [];
+  });
+
+  socket.on("badge-unlocked", (badge) => {
+    if (!myPermanentBadges.some((b) => b.id === badge.id)) {
+      myPermanentBadges.push(badge);
+    }
+    showBadgeToast(badge);
+  });
+
+  socket.on("presentation-ended", () => {
+    slideNumberEl.textContent = "Presentation ended";
   });
 
   // --------------------------------------------------------

@@ -252,6 +252,10 @@
       quizLeaderboardTable.appendChild(tr);
     });
 
+    // Remove any existing "New Quiz" button before adding a new one
+    const existingBtn = quizResultsPanel.querySelector("button");
+    if (existingBtn) existingBtn.remove();
+
     // Give the presenter a way back to building the next question.
     const backBtn = document.createElement("button");
     backBtn.textContent = "New Quiz";

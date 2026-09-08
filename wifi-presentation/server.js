@@ -284,6 +284,99 @@ let quizTimer = null;
 const VALID_QUIZ_TYPES = new Set(["multiple_choice", "true_false", "identification"]);
 const VALID_DIFFICULTIES = new Set(["easy", "medium", "hard"]);
 
+// ------------------------------------------------------------
+// BADGES (NEW)
+// ------------------------------------------------------------
+const BADGE_DEFINITIONS = {
+  good_listener:   { name: "Good Listener", icon: "👂", rarity: "Rare" },
+  on_fire:         { name: "On Fire", icon: "🔥", rarity: "Rare" },
+  brainstorm:      { name: "Brainstorm", icon: "🧠", rarity: "Epic" },
+  perfect_run:     { name: "Perfect Run", icon: "💎", rarity: "Legendary" },
+  lightning:       { name: "Lightning", icon: "⚡", rarity: "Rare" },
+  perfect_shot:    { name: "Perfect Shot", icon: "🎯", rarity: "Epic" },
+  bright_mind:     { name: "Bright Mind", icon: "💡", rarity: "Common" },
+  first_step:      { name: "First Step", icon: "🙋", rarity: "Common" },
+  dedicated:       { name: "Dedicated", icon: "📚", rarity: "Rare" },
+  until_the_end:   { name: "Until the End", icon: "⏳", rarity: "Rare" },
+  fast_starter:    { name: "Fast Starter", icon: "🚀", rarity: "Common" },
+  comeback:        { name: "Comeback", icon: "🏅", rarity: "Epic" },
+  quiz_warrior:    { name: "Quiz Warrior", icon: "💎", rarity: "Epic" },
+};
+
+// Dynamic badges are computed live from current rank -- never
+// stored in the DB, always recalculated on every leaderboard push.
+function dynamicBadgeForRank(rank) {
+  if (rank === 1) return { id: "genius", name: "Genius", icon: "🧠", rarity: "Legendary" };
+  if (rank === 2) return { id: "diligent", name: "Diligent", icon: "🔥", rarity: "Epic" };
+  return { id: "lowkey", name: "Lowkey", icon: "🥷", rarity: "Common" };
+}
+const BULAKBOL_BADGE = { id: "bulakbol", name: "Bulakbol", icon: "💤", rarity: "Lowest" };
+
+let totalQuizzesLaunched = 0;
+const COMEBACK_RANK_IMPROVEMENT_THRESHOLD = 3; // positions
+const QUIZ_WARRIOR_CORRECT_THRESHOLD = 10; // total correct answers
+const FAST_STARTER_CUTOFF = 3; // among first N responders of a quiz
+
+// Awards a permanent badge to a user if they don't already have it.
+// Safe to call repeatedly -- it's a no-op if already earned.
+async function awardBadge(userId, badgeId) {
+  const def = BADGE_DEFINITIONS[badgeId];
+  if (!def) return;
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.query(
+      "SELECT badges FROM user_progress WHERE user_id = ? FOR UPDATE",
+      [userId]
+    );
+    if (rows.length === 0) {
+      await connection.rollback();
+      return;
+    }
+
+    const existing = Array.isArray(rows[0].badges) ? rows[0].badges : [];
+    if (existing.some((b) => b.id === badgeId)) {
+      await connection.rollback();
+      return; // already earned
+    }
+
+    const newBadge = {
+      id: badgeId,
+      name: def.name,
+      icon: def.icon,
+      rarity: def.rarity,
+      earnedAt: new Date().toISOString(),
+    };
+    const updatedBadges = [...existing, newBadge];
+
+    await connection.query("UPDATE user_progress SET badges = ? WHERE user_id = ?", [
+      JSON.stringify(updatedBadges),
+      userId,
+    ]);
+    await connection.commit();
+
+    // Notify the user's connected device(s) so the UI can play an
+    // unlock animation.
+    const socketIds = viewerSocketsByUserId.get(userId);
+    if (socketIds) {
+      for (const sid of socketIds) {
+        io.to(sid).emit("badge-unlocked", newBadge);
+      }
+    }
+    console.log(`[badges] awarded "${badgeId}" to user ${userId}`);
+  } catch (err) {
+    try {
+      await connection.rollback();
+    } catch (_) {
+      /* ignore */
+    }
+    console.error("[badges] award error:", err);
+  } finally {
+    connection.release();
+  }
+}
+
 function levelForXp(xp) {
   // Simple, tweakable leveling curve: 100 XP per level.
   return Math.floor(xp / 100) + 1;
@@ -338,15 +431,18 @@ function broadcastQuizLiveStatus() {
   });
 }
 
-// Persists one user's quiz result to the database: bumps xp/level
+// Persists one user's quiz result to the database: bumps xp/level,
+// updates streak/participation/rank-tracking columns for badges,
 // and appends a small record to their quiz_results JSON history.
-async function persistQuizResultForUser(userId, resultEntry, xpAwarded) {
+// Returns enough info for the caller to decide which badges to award.
+async function persistQuizResultForUser(userId, resultEntry, xpAwarded, correct) {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
 
     const [rows] = await connection.query(
-      "SELECT xp, quiz_results FROM user_progress WHERE user_id = ? FOR UPDATE",
+      `SELECT xp, quiz_results, current_streak, best_streak, quizzes_participated
+       FROM user_progress WHERE user_id = ? FOR UPDATE`,
       [userId]
     );
     if (rows.length === 0) {
@@ -357,18 +453,39 @@ async function persistQuizResultForUser(userId, resultEntry, xpAwarded) {
     const row = rows[0];
     const previousXp = row.xp || 0;
     const previousResults = Array.isArray(row.quiz_results) ? row.quiz_results : [];
+    const previousStreak = row.current_streak || 0;
+    const previousBestStreak = row.best_streak || 0;
+    const previousParticipated = row.quizzes_participated || 0;
+    const previousCorrectCount = previousResults.filter((r) => r.correct).length;
+    const previousIncorrectCount = previousResults.filter((r) => !r.correct).length;
 
     const newXp = previousXp + xpAwarded;
     const newLevel = levelForXp(newXp);
     const newResults = [...previousResults, resultEntry].slice(-200); // cap history length
+    const newStreak = correct ? previousStreak + 1 : 0;
+    const newBestStreak = Math.max(previousBestStreak, newStreak);
+    const newParticipated = previousParticipated + 1;
 
     await connection.query(
-      "UPDATE user_progress SET xp = ?, level = ?, quiz_results = ? WHERE user_id = ?",
-      [newXp, newLevel, JSON.stringify(newResults), userId]
+      `UPDATE user_progress
+       SET xp = ?, level = ?, quiz_results = ?, current_streak = ?, best_streak = ?, quizzes_participated = ?
+       WHERE user_id = ?`,
+      [newXp, newLevel, JSON.stringify(newResults), newStreak, newBestStreak, newParticipated, userId]
     );
 
     await connection.commit();
-    return { xp: newXp, level: newLevel };
+
+    return {
+      xp: newXp,
+      level: newLevel,
+      newStreak,
+      newBestStreak,
+      newParticipated,
+      isFirstQuiz: previousParticipated === 0,
+      isFirstCorrect: correct && previousCorrectCount === 0,
+      totalCorrectCount: previousCorrectCount + (correct ? 1 : 0),
+      totalIncorrectCount: previousIncorrectCount + (correct ? 0 : 1),
+    };
   } catch (err) {
     try {
       await connection.rollback();
@@ -438,6 +555,26 @@ function endQuiz() {
     leaderboard,
   };
 
+  // Badge checks that need the full set of responses for this quiz.
+  if (correctResponses.length === 1 && respondedCount > 1) {
+    awardBadge(correctResponses[0].userId, "good_listener");
+  }
+  if (correctResponses.length > 0) {
+    const fastestCorrect = correctResponses.slice().sort((a, b) => a.timeMs - b.timeMs)[0];
+    awardBadge(fastestCorrect.userId, "lightning");
+  }
+  for (const [userId, set] of viewerSocketsByUserId.entries()) {
+    if (set.size === 0) continue;
+    pool
+      .query("SELECT quizzes_participated FROM user_progress WHERE user_id = ?", [userId])
+      .then(([rows]) => {
+        if (rows.length && rows[0].quizzes_participated >= totalQuizzesLaunched) {
+          awardBadge(userId, "dedicated");
+        }
+      })
+      .catch((err) => console.error("[badges] dedicated check error:", err));
+  }
+
   io.to("presenters").emit("quiz-results", resultsPayload);
 
   // Let every viewer know the quiz is over (so late-answer UI can
@@ -455,6 +592,7 @@ function endQuiz() {
 
 function launchQuiz(config) {
   clearQuizTimer();
+  totalQuizzesLaunched++;
 
   const id = `quiz-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -497,46 +635,78 @@ function launchQuiz(config) {
 }
 
 // ------------------------------------------------------------
-// LEADERBOARD (NEW)
+// LEADERBOARD + DYNAMIC BADGES (NEW)
 // ------------------------------------------------------------
-// Fetches the top-ranked users by XP and pushes the list to every
-// connected viewer. Called whenever a user's XP changes so the
-// Viewer UI's leaderboard panel stays live without polling.
+// Fetches ALL users ranked by XP (not just the public top 20) so
+// we can compute an accurate rank for every connected viewer,
+// then: (a) broadcasts the public top-20 leaderboard, and
+// (b) sends each connected viewer their own rank + dynamic badge +
+// their current permanent badges, updating first_rank/best_rank
+// along the way for the Comeback badge.
 async function broadcastLeaderboardUpdate() {
   try {
     const [rows] = await pool.query(
-      `SELECT u.username, p.xp, p.level
+      `SELECT u.id AS userId, u.username, p.xp, p.level, p.first_rank, p.best_rank, p.badges
        FROM users u JOIN user_progress p ON p.user_id = u.id
-       ORDER BY p.xp DESC LIMIT 20`
+       ORDER BY p.xp DESC`
     );
-    const leaderboard = rows.map((row, i) => ({
-      rank: i + 1,
-      username: row.username,
-      xp: row.xp,
-      level: row.level,
-    }));
-    io.to("viewers").emit("leaderboard-update", leaderboard);
+
+    const top20 = rows.slice(0, 20).map((row, i) => {
+      const rank = i + 1;
+      let permanent = [];
+      try {
+        permanent = Array.isArray(row.badges) ? row.badges : (row.badges ? JSON.parse(row.badges) : []);
+      } catch (e) {
+        permanent = [];
+      }
+      return {
+        rank,
+        username: row.username,
+        xp: row.xp,
+        level: row.level,
+        dynamicBadge: dynamicBadgeForRank(rank),
+        permanentBadges: permanent,
+      };
+    });
+    io.to("viewers").emit("leaderboard-update", top20);
+
+    // Per-connected-viewer rank + dynamic badge + Comeback check.
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rank = i + 1;
+      const socketIds = viewerSocketsByUserId.get(row.userId);
+      if (!socketIds || socketIds.size === 0) continue; // not connected
+
+      const dynamicBadge = dynamicBadgeForRank(rank);
+      const payload = {
+        rank,
+        totalRanked: rows.length,
+        dynamicBadge,
+        permanentBadges: Array.isArray(row.badges) ? row.badges : [],
+      };
+      for (const sid of socketIds) {
+        io.to(sid).emit("your-rank-update", payload);
+      }
+
+      const newFirstRank = row.first_rank == null ? rank : row.first_rank;
+      const newBestRank = row.best_rank == null ? rank : Math.min(row.best_rank, rank);
+
+      if (row.first_rank == null || row.best_rank == null || newBestRank !== row.best_rank) {
+        pool
+          .query("UPDATE user_progress SET first_rank = ?, best_rank = ? WHERE user_id = ?", [
+            newFirstRank,
+            newBestRank,
+            row.userId,
+          ])
+          .catch((err) => console.error("[badges] rank update error:", err));
+      }
+
+      if (row.first_rank != null && row.first_rank - rank >= COMEBACK_RANK_IMPROVEMENT_THRESHOLD) {
+        awardBadge(row.userId, "comeback");
+      }
+    }
   } catch (err) {
     console.error("[leaderboard] broadcast error:", err);
-  }
-}
-
-async function sendLeaderboardTo(socket) {
-  try {
-    const [rows] = await pool.query(
-      `SELECT u.username, p.xp, p.level
-       FROM users u JOIN user_progress p ON p.user_id = u.id
-       ORDER BY p.xp DESC LIMIT 20`
-    );
-    const leaderboard = rows.map((row, i) => ({
-      rank: i + 1,
-      username: row.username,
-      xp: row.xp,
-      level: row.level,
-    }));
-    socket.emit("leaderboard-update", leaderboard);
-  } catch (err) {
-    console.error("[leaderboard] send error:", err);
   }
 }
 
@@ -847,9 +1017,7 @@ io.on("connection", (socket) => {
   sendCurrentSlideTo(socket);
   sendWhiteboardStateTo(socket);
 
-    sendCurrentSlideTo(socket);
-  sendWhiteboardStateTo(socket);
-  if (!isPresenterSocket && socket.user) sendLeaderboardTo(socket);
+  if (!isPresenterSocket && socket.user) broadcastLeaderboardUpdate();
 
   // Catch late joiners up on a quiz already in progress.
   if (quizState && quizState.active && socket.rooms.has("viewers")) {
@@ -916,6 +1084,17 @@ io.on("connection", (socket) => {
     if (!isAuthenticatedPresenter()) return;
     currentSlideIndex = 0;
     broadcastCurrentSlide();
+  });
+
+  // Presenter explicitly ends the presentation -- award "Until the
+  // End" to everyone still connected right now.
+  socket.on("end-presentation", () => {
+    if (!isAuthenticatedPresenter()) return;
+    for (const [userId, set] of viewerSocketsByUserId.entries()) {
+      if (set.size > 0) awardBadge(userId, "until_the_end");
+    }
+    io.to("viewers").emit("presentation-ended");
+    console.log(`[presentation] ended by ${socket.id}.`);
   });
 
   // ------------------------------------------------------------
@@ -1031,10 +1210,25 @@ io.on("connection", (socket) => {
       at: new Date().toISOString(),
     };
 
+    const updated = await persistQuizResultForUser(userId, resultEntry, xpAwarded, correct);
+    if (updated) {
+      broadcastLeaderboardUpdate();
 
+      if (updated.isFirstQuiz) await awardBadge(userId, "first_step");
+      if (updated.isFirstCorrect) await awardBadge(userId, "bright_mind");
+      if (correct && updated.newStreak === 3) await awardBadge(userId, "on_fire");
+      if (correct && updated.newStreak === 4) await awardBadge(userId, "brainstorm");
+      if (correct && updated.newStreak >= 5) await awardBadge(userId, "perfect_run");
+      if (updated.totalCorrectCount >= QUIZ_WARRIOR_CORRECT_THRESHOLD) await awardBadge(userId, "quiz_warrior");
+      if (updated.totalCorrectCount >= 5 && updated.totalIncorrectCount === 0) {
+        await awardBadge(userId, "perfect_shot");
+      }
 
-        const updated = await persistQuizResultForUser(userId, resultEntry, xpAwarded);
-    if (updated) broadcastLeaderboardUpdate();
+      // "Fast Starter" -- among the first few to respond to this quiz.
+      if (quizState.responses.size <= FAST_STARTER_CUTOFF) {
+        await awardBadge(userId, "fast_starter");
+      }
+    }
 
     socket.emit("quiz-feedback", {
       quizId: quizState.id,
